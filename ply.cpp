@@ -4,8 +4,7 @@
 #include "ply.h"
 #include <fstream>
 
-
-mesh load_ply(std::string path, bool describe) {
+indexed_mesh load_ply(std::string path, bool describe) {
     try {
         std::vector<uint8_t> byte_buffer;
         std::ifstream stream{path, std::ios::binary};
@@ -43,7 +42,7 @@ mesh load_ply(std::string path, bool describe) {
                 fmt::print("faces: {}\n", faces->count);
         }
 
-        mesh data;
+        indexed_mesh data;
         data.vertices.resize(vertices->count);
         data.triangles.resize(faces->count);
 
@@ -71,4 +70,3 @@ mesh load_ply(std::string path, bool describe) {
 
     return {};
 }
-
