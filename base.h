@@ -58,3 +58,4 @@ struct indexed_mesh {
 };
 
 indexed_mesh load_ply(std::string path, bool describe = false);
+

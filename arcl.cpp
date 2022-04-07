@@ -1,21 +1,22 @@
 #include "base.h"
+#include "scene.h"
+
 #include <array>
-#include <numeric>
 #include <queue>
-#include <variant>
 
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
 
-struct ray {
-    vec3f origin;
-    vec3f direction;
-};
+matrix_sq4 matrix_sq4::matmul(const matrix_sq4& b) const {
+    matrix_sq4 c{};
+    auto A = reinterpret_cast<const Float(&)[16]>(m);
+    auto B = reinterpret_cast<const Float(&)[16]>(b.m);
+    auto C = reinterpret_cast<Float(&)[16]>(c.m);
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, 4, 4, 4, 1., A, 4, B,
+                4, 1., C, 4);
 
-struct intersection {
-    Float distance;
-    vec3f normal;
-};
+    return c;
+}
 
 bounding_box shape_bounds(const triangle& V) {
     vec3f min{std::min(std::min(V.A.x, V.B.x), V.C.x),
@@ -47,169 +48,6 @@ bool bbox_ray_intersection(const bounding_box& bb, const ray& ray,
     return t0 <= t1;
 }
 
-struct matrix_sq4 {
-    Float m[4][4];
-
-    matrix_sq4 matmul(const matrix_sq4& b) const {
-        matrix_sq4 c{};
-        auto A = reinterpret_cast<const Float(&)[16]>(m);
-        auto B = reinterpret_cast<const Float(&)[16]>(b.m);
-        auto C = reinterpret_cast<Float(&)[16]>(c.m);
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, 4, 4, 4, 1., A,
-                    4, B, 4, 1., C, 4);
-
-        return c;
-    }
-
-    static matrix_sq4 identity() {
-        auto m = matrix_sq4{};
-        for (int i{}; i < 4; ++i) m.m[i][i] = 1;
-        return m;
-    }
-};
-
-struct transform {
-    matrix_sq4 m{};
-    matrix_sq4 i{};
-
-    transform compose(const transform& with) const {
-        return {m.matmul(with.m), with.i.matmul(i)};
-    }
-
-    transform inverse() const { return {i, m}; }
-
-    vec3f point(const vec3f& p) const {
-        auto mp = vec3f{
-            p.x * m.m[0][0] + p.y * m.m[0][1] + p.z * m.m[0][2] + m.m[0][3],
-            p.x * m.m[1][0] + p.y * m.m[1][1] + p.z * m.m[1][2] + m.m[1][3],
-            p.x * m.m[2][0] + p.y * m.m[2][1] + p.z * m.m[2][2] + m.m[2][3]};
-        auto w =
-            p.x * m.m[3][0] + p.y * m.m[3][1] + p.z * m.m[3][2] + m.m[3][3];
-        if (w == 1)
-            return mp;
-        else
-            return mp / w;
-    }
-
-    vec3f vector(const vec3f& v) const {
-        return vec3f{v.x * m.m[0][0] + v.y * m.m[0][1] + v.z * m.m[0][2],
-                     v.x * m.m[1][0] + v.y * m.m[1][1] + v.z * m.m[1][2],
-                     v.x * m.m[2][0] + v.y * m.m[2][1] + v.z * m.m[2][2]};
-    }
-
-    vec3f normal(const vec3f& v) const {
-        return vec3f{v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0],
-                     v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1],
-                     v.x * m.m[0][2] + v.y * m.m[1][2] + v.z * m.m[2][2]};
-    }
-
-    ray operator()(const ray& r) const {
-        return ray{point(r.origin), vector(r.direction)};
-    }
-
-    static transform identity() {
-        return {matrix_sq4::identity(), matrix_sq4::identity()};
-    }
-
-    static transform translate(vec3f t) {
-        auto m = matrix_sq4::identity();
-        m.m[0][3] = t.x;
-        m.m[1][3] = t.y;
-        m.m[2][3] = t.z;
-        auto i = matrix_sq4::identity();
-        i.m[0][3] = -t.x;
-        i.m[1][3] = -t.y;
-        i.m[2][3] = -t.z;
-        return {m, i};
-    }
-
-    static transform scale(vec3f s) {
-        auto m = matrix_sq4::identity();
-        m.m[0][0] = s.x;
-        m.m[1][1] = s.y;
-        m.m[2][2] = s.z;
-        auto i = matrix_sq4::identity();
-        i.m[0][0] = 1 / s.x;
-        i.m[1][1] = 1 / s.y;
-        i.m[2][2] = 1 / s.z;
-        return {m, i};
-    }
-
-    static transform rotate_z(Float a) {
-        auto m = matrix_sq4::identity();
-        auto cos_a = std::cos(-a);
-        auto sin_a = std::sin(-a);
-        m.m[0][0] = cos_a;
-        m.m[0][1] = -sin_a;
-        m.m[1][0] = sin_a;
-        m.m[1][1] = cos_a;
-        auto i = matrix_sq4::identity();
-        cos_a = std::cos(a);
-        sin_a = std::sin(a);
-        i.m[0][0] = cos_a;
-        i.m[0][1] = -sin_a;
-        i.m[1][0] = sin_a;
-        i.m[1][1] = cos_a;
-        return {m, i};
-    }
-
-    static transform look_at(vec3f pos, vec3f at, vec3f up) {
-        up = up.normalized();
-        auto m = translate(pos).m;
-        auto n = (at - pos).normalized();
-        m.m[0][2] = n.x;
-        m.m[1][2] = n.y;
-        m.m[2][2] = n.z;
-        auto x = up.cross(n).normalized();
-        m.m[0][0] = x.x;
-        m.m[1][0] = x.y;
-        m.m[2][0] = x.z;
-        auto y = x.cross(n);
-        m.m[0][1] = y.x;
-        m.m[1][1] = y.y;
-        m.m[2][1] = y.z;
-        return {m};
-    }
-};
-
-struct BVH {
-    bounding_box bounds;
-    std::vector<int> overlap;
-    std::unique_ptr<BVH> a, b;
-};
-
-struct bvh_mesh {
-    indexed_mesh data;
-    BVH bvh;
-};
-
-struct node_bvh;
-struct node_instance;
-
-using node =
-    std::variant<std::unique_ptr<triangle>, std::unique_ptr<bvh_mesh>,
-                 std::unique_ptr<node_bvh>, std::unique_ptr<node_instance>>;
-using node_view = std::variant<const triangle*, const bvh_mesh*,
-                               const node_bvh*, const node_instance*>;
-
-bounding_box node_bounds(const node& n);
-std::optional<intersection> intersect(const node& n, const ray& r);
-bounding_box node_bounds(const node_view& n);
-std::optional<intersection> intersect(const node_view& n, const ray& r);
-
-struct node_bvh {
-    std::vector<node> nodes;
-    BVH bvh;
-};
-
-struct node_instance {
-    node_instance(transform T, const node& n) : T(T) {
-        this->n = std::visit([](auto& n) { return node_view{n.get()}; }, n);
-    }
-    transform T;
-    node_view n;
-};
-
 std::unique_ptr<node_instance> instance(const transform& T, const node& n) {
     auto i = std::make_unique<node_instance>(T, n);
     return i;
@@ -240,7 +78,9 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r) {
     if (not hit)
         return {};
     return intersection{
-        i.T.vector(ri.origin + ri.direction * hit->distance).length(),
+        // i.T.vector(ri.origin + ri.direction * hit->distance).length(),
+        // (r.origin + r.direction*hit->distance).length(),
+        hit->distance,
         i.T.normal(hit->normal).normalized()};
 }
 
@@ -252,59 +92,6 @@ std::optional<intersection> intersect(const node& n, const ray& r) {
 
 std::optional<intersection> intersect(const node_view& n, const ray& r) {
     return std::visit([r](const auto& n) { return intersect(*n, r); }, n);
-}
-
-template <class Fn> std::pair<int, Float>
-partition_dimension(const std::vector<int>& objs, Fn&& bound) {
-    bounding_box all = {{std::numeric_limits<Float>::max()},
-                        {std::numeric_limits<Float>::lowest()}};
-    for (auto index : objs) all = all | bound(index).centroid();
-
-    auto size = vec3f{all.max.x - all.min.x, all.max.y - all.min.y,
-                      all.max.z - all.min.z};
-    auto best = std::max(size.x, std::max(size.y, size.z));
-    if (best == size.x)
-        return {0, all.min.x + size.x / 2};
-    else if (best == size.y)
-        return {1, all.min.y + size.y / 2};
-    else
-        return {2, all.min.z + size.z / 2};
-}
-
-template <class Fn> BVH build_bvh(const std::vector<int>& objs, Fn&& bound) {
-    BVH node;
-    auto [dimension, cut] = partition_dimension(objs, bound);
-    node.bounds = {{std::numeric_limits<Float>::max()},
-                   {std::numeric_limits<Float>::lowest()}};
-    for (auto index : objs) node.bounds = node.bounds | bound(index);
-
-    if (objs.size() <= 8) {
-        node.overlap = objs;
-        return node;
-    }
-
-    std::vector<int> L;
-    std::vector<int> R;
-    for (auto index : objs) {
-        bool above = bound(index).centroid()[dimension] < cut;
-        if (above)
-            L.push_back(index);
-        else
-            R.push_back(index);
-    }
-
-    if (not L.empty())
-        node.a = std::make_unique<BVH>(build_bvh(L, bound));
-    if (not R.empty())
-        node.b = std::make_unique<BVH>(build_bvh(R, bound));
-
-    return node;
-}
-
-template <class Fn> BVH build_bvh(const size_t size, Fn&& bound) {
-    std::vector<int> indices(size);
-    std::iota(indices.begin(), indices.end(), 0);
-    return build_bvh(indices, bound);
 }
 
 struct bvh_traversal {
@@ -402,19 +189,6 @@ std::unique_ptr<bvh_mesh> load_model(std::string path) {
     return std::make_unique<bvh_mesh>(std::move(mesh));
 }
 
-struct camera {
-    transform camera_to_world;
-    transform raster_to_screen;
-    transform raster_to_camera;
-    transform screen_to_camera;
-
-    ray point(vec2f px) {
-        auto o = raster_to_camera.point({px.x, px.y, 0});
-        return camera_to_world(ray{o, {0, 0, 1}});
-        return ray{{0, 0, 0}, {1, 1, 1}};
-    }
-};
-
 camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
                            vec3f towards, vec3f up) {
     camera c;
@@ -432,54 +206,21 @@ camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
     return c;
 }
 
-struct scene {
-    node root;
-    camera view;
-    std::vector<node> assets;
-};
-
-scene test_scene(vec2<int> resolution) {
-    std::vector<node> assets;
-    auto model = node{load_model("scene/bunny/bun_zipper.ply")};
-    auto pair = [&model]() {
-        auto pair = std::make_unique<node_bvh>();
-        pair->nodes.push_back(instance(
-            transform::scale({1.2}).compose(transform::translate({.1})),
-            model));
-        pair->nodes.push_back(instance(
-            transform::scale({.8}).compose(transform::translate({-.1})),
-            model));
-        pair->bvh = build_bvh(pair->nodes.size(), [&pair](size_t n) {
-            return node_bounds(pair->nodes[n]);
-        });
-        return node{std::move(pair)};
+int main(int argc, char** argv) {
+    auto scene_path = [argc, argv]() -> std::optional<std::string> {
+        if (argc <= 1)
+            return {};
+        return {{argv[1]}};
     }();
 
-    auto a = std::make_unique<node_bvh>();
-    a->nodes.push_back(instance(transform::scale({.7}), pair));
-    a->nodes.push_back(instance(transform::translate({-0.1, -0.0, -.0}), pair));
-    a->nodes.push_back(instance(transform::rotate_z(0.2), pair));
-    a->nodes.push_back(instance(transform::rotate_z(0.4), pair));
+    if (not scene_path) {
+        fmt::print("missing scene path\n", *scene_path);
+        exit(1);
+    }
 
-    a->nodes.push_back(std::make_unique<triangle>(
-        triangle{{-0.1, 0, -0.1}, {-0.1, 0, 0.1}, {0.1, 0, -0.1}}));
-    a->nodes.push_back(std::make_unique<triangle>(
-        triangle{{0.1, 0, -0.1}, {-0.1, 0, 0.1}, {0.1, 0, 0.1}}));
-
-    a->bvh = build_bvh(a->nodes.size(),
-                       [&a](size_t n) { return node_bounds(a->nodes[n]); });
-    auto view =
-        orthographic_camera(vec2f{resolution}, .2, vec3f{1., 1., 2.} * 4,
-                            {-0.03, 0.11, 0.}, {0., 1, 0.});
-
-    assets.push_back(std::move(model));
-    assets.push_back(std::move(pair));
-    return {std::move(a), view, std::move(assets)};
-}
-
-int main() {
-    auto resolution = vec2<int>{400, 400};
-    auto scene = test_scene(resolution);
+    auto scene = load_scene(*scene_path);
+    auto resolution = scene.resolution;
+    fmt::print("loaded {}\n", *scene_path);
 
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
@@ -494,7 +235,7 @@ int main() {
                 auto shade = intersection->normal.dot(ray.direction);
                 c = 255 - ((shade + 1) / 2) * 255;
                 // auto shade = intersection->distance;
-                // c = 255 * (shade) / 1;
+                // c = 255 * (shade) / 3;
             }
             auto px_offset = 4 * (y * resolution.x + x);
             out[px_offset + 0] = c;
