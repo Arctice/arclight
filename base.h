@@ -15,6 +15,7 @@ using Float = float;
 using vec2f = vec2<Float>;
 using vec3f = vec3<Float>;
 constexpr Float epsilon = std::numeric_limits<Float>::epsilon() * 0.5;
+constexpr Float pi = 3.14159265359;
 
 struct bounding_box {
     vec3f min, max;

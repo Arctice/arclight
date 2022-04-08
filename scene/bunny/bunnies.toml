@@ -1,0 +1,49 @@
+
+[film]
+resolution = [600, 600]
+supersampling = 6
+depth = 8
+
+[camera]
+type = "orthographic"
+scale = 0.22
+position = [-5, 5, 6]
+towards = [0.04, 0.07, 0]
+up = [0, 1, 0]
+
+[model.bunny]
+file = "bun_zipper.ply"
+
+[node.pair]
+group = true
+[node.pair.a]
+instance = "model.bunny"
+transform = [["translate", [0.08, 0.02, 0.1]], ["scale", 1.2]]
+[node.pair.b]
+instance = "model.bunny"
+transform = [["translate", [-0.03, -0.04, -0.01]], ["scale", 0.8], ["rotate-z", -0.1]]
+
+[node.floor]
+group = true
+[node.floor.a]
+triangle = [[-0.1, 0, -0.1], [-0.1, 0, 0.1], [0.1, 0, -0.1]]
+[node.floor.b]
+triangle = [[0.1, 0, -0.1], [-0.1, 0, 0.1], [0.1, 0, 0.1]]
+
+
+[[world]]
+instance = "node.pair"
+transform = [["scale", 0.7]]
+[[world]]
+instance = "node.pair"
+transform = [["rotate-z", -0.3], ["translate", [-0.01, -0.01, -0.13]]]
+[[world]]
+instance = "node.pair"
+transform = [["rotate-z", 0.2]]
+[[world]]
+instance = "node.pair"
+transform = [["rotate-z", 0.4]]
+[[world]]
+instance = "node.floor"
+transform = [["scale", 1.4]]
+

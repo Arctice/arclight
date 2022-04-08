@@ -1,7 +1,7 @@
 flags = -std=c++2a -Wall -Wextra -Wpedantic -march=native -fopenmp=libiomp5
 libs = -lomp5 -pthread -latomic -lfmt -lsfml-window -lsfml-graphics -lsfml-system -lopenblas
 
-src = arcl.cpp scene.cpp ply.cpp
+src = arcl.cpp rng.cpp scene.cpp ply.cpp
 objs=$(src:.cpp=.o)
 
 %.o : %.cpp

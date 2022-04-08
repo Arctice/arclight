@@ -1,0 +1,16 @@
+
+[film]
+resolution = [200, 200]
+
+[camera]
+type = "orthographic"
+scale = 2.0
+position = [0, -10, 10]
+towards = [0, 0, 0]
+up = [0, 0, 1]
+
+[[world]]
+triangle = [[-1, -1, 0], [1, -1, 0], [-1, 1, 0]]
+[[world]]
+triangle = [[1, -1, 0], [1, 1, 0], [-1, 1, 0]]
+

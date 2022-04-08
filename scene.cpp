@@ -77,6 +77,8 @@ scene load_scene(std::string path) {
     auto config = toml::parse_file(path);
 
     auto resolution = parse_vec2<int>(config["film"]["resolution"]);
+    auto supersampling = config["film"]["supersampling"].value_or(8);
+    auto depth = config["film"]["depth"].value_or(6);
 
     auto cam_config = config["camera"];
     auto cam_type = *cam_config["type"].value_exact<std::string>();
@@ -124,11 +126,6 @@ scene load_scene(std::string path) {
         root->nodes.push_back(parse_node(nodes, *x.as_table()));
     }
 
-    // a->nodes.push_back(std::make_unique<triangle>(
-    //     triangle{{-0.1, 0, -0.1}, {-0.1, 0, 0.1}, {0.1, 0, -0.1}}));
-    // a->nodes.push_back(std::make_unique<triangle>(
-    //     triangle{{0.1, 0, -0.1}, {-0.1, 0, 0.1}, {0.1, 0, 0.1}}));
-
     fmt::print("world bvh... \n");
     root->bvh = build_bvh(root->nodes.size(), [&root](size_t n) {
         return node_bounds(root->nodes[n]);
@@ -137,5 +134,8 @@ scene load_scene(std::string path) {
     std::vector<node> assets;
     for (auto& [name, node] : nodes) assets.push_back(std::move(node));
 
-    return {resolution, std::move(root), view, std::move(assets)};
+    return {{resolution, supersampling, depth},
+            std::move(root),
+            view,
+            std::move(assets)};
 }

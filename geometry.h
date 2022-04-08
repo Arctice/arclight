@@ -46,7 +46,7 @@ public:
 };
 
 template <typename T> vec3<T> vec3<T>::normalized() const {
-    T r = std::sqrt(this->length_sq());
+    T r = length();
     return vec3(x / r, y / r, z / r);
 }
 
@@ -188,7 +188,7 @@ public:
 };
 
 template <typename T> vec2<T> vec2<T>::normalized() const {
-    auto r = std::sqrt(this->length_sq());
+    auto r = length();
     return vec2(x / r, y / r);
 }
 

@@ -6,6 +6,8 @@
 struct ray {
     vec3f origin;
     vec3f direction;
+
+    vec3f distance(Float t) const { return origin + direction * t; }
 };
 
 struct intersection {
@@ -238,8 +240,14 @@ struct node_instance {
 
 std::unique_ptr<node_instance> instance(const transform& T, const node& n);
 
-struct scene {
+struct film {
     vec2<int> resolution;
+    int supersampling;
+    int depth;
+};
+
+struct scene {
+    film film;
     node root;
     camera view;
     std::vector<node> assets;

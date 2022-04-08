@@ -1,5 +1,6 @@
 #include "base.h"
 #include "scene.h"
+#include "rng.h"
 
 #include <array>
 #include <queue>
@@ -77,11 +78,7 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r) {
     auto hit = intersect(i.n, ri);
     if (not hit)
         return {};
-    return intersection{
-        // i.T.vector(ri.origin + ri.direction * hit->distance).length(),
-        // (r.origin + r.direction*hit->distance).length(),
-        hit->distance,
-        i.T.normal(hit->normal).normalized()};
+    return intersection{hit->distance, i.T.normal(hit->normal).normalized()};
 }
 
 std::optional<intersection> intersect(const node_bvh&, const ray&);
@@ -206,6 +203,42 @@ camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
     return c;
 }
 
+using light = vec3f;
+
+bool same_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
+
+light naive_trace(scene& scene, ray r, int depth) {
+    auto intersection = intersect(scene.root, r);
+    if (not intersection)
+        return {8};
+    if (0 == depth)
+        return {};
+
+    auto inorm = intersection->normal;
+    auto scatter_d = sample_uniform_direction().normalized();
+    auto icos = inorm.dot(scatter_d);
+    auto f = icos / pi;
+
+    if (f <= 0 or not same_hemisphere(inorm, scatter_d))
+        return {};
+
+    auto reflection_point = r.distance(intersection->distance);
+    auto scatter_ray = ray{reflection_point + inorm * epsilon, scatter_d};
+
+    auto Li = naive_trace(scene, scatter_ray, depth - 1);
+    return Li * f;
+}
+
+light debug_trace(scene& scene, ray r) {
+    auto intersection = intersect(scene.root, r);
+    if (not intersection)
+        return {};
+    auto ncos = intersection->normal.dot(r.direction);
+    auto norm_l = 1 - (ncos + 1) / 2;
+    auto d = 1 - (std::cos(intersection->distance * 4) + 1) / 2;
+    return {(norm_l + d) / 2, (norm_l + d) / 2, (norm_l + d) / 2};
+}
+
 int main(int argc, char** argv) {
     auto scene_path = [argc, argv]() -> std::optional<std::string> {
         if (argc <= 1)
@@ -213,34 +246,52 @@ int main(int argc, char** argv) {
         return {{argv[1]}};
     }();
 
+    auto arg_present = [argc, argv](std::string name) -> bool {
+        for (auto i{2}; i < argc; ++i) {
+            if (std::string{argv[i]} == name)
+                return true;
+        }
+        return false;
+    };
+
+    auto debug = arg_present("--debug");
+
     if (not scene_path) {
         fmt::print("missing scene path\n", *scene_path);
         exit(1);
     }
 
     auto scene = load_scene(*scene_path);
-    auto resolution = scene.resolution;
+    auto resolution = scene.film.resolution;
     fmt::print("loaded {}\n", *scene_path);
 
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
+
+#pragma omp parallel for schedule(monotonic : dynamic)
     for (int y = 0; y < resolution.y; ++y) {
         for (int x = 0; x < resolution.x; ++x) {
             auto px = vec2{x, y};
             auto ray = scene.view.point(vec2f{px});
             ray.direction = ray.direction.normalized();
-            auto intersection = intersect(scene.root, ray);
-            u8 c = 0;
-            if (intersection) {
-                auto shade = intersection->normal.dot(ray.direction);
-                c = 255 - ((shade + 1) / 2) * 255;
-                // auto shade = intersection->distance;
-                // c = 255 * (shade) / 3;
+
+            light light{};
+
+            if (debug)
+                light = debug_trace(scene, ray);
+            else {
+                for (int s{}; s < scene.film.supersampling; ++s)
+                    light += naive_trace(scene, ray, scene.film.depth);
+                light /= scene.film.supersampling;
             }
+
+            auto r = std::clamp<Float>(light.x, 0, 1);
+            auto g = std::clamp<Float>(light.y, 0, 1);
+            auto b = std::clamp<Float>(light.z, 0, 1);
             auto px_offset = 4 * (y * resolution.x + x);
-            out[px_offset + 0] = c;
-            out[px_offset + 1] = c;
-            out[px_offset + 2] = c;
+            out[px_offset + 0] = r * 255;
+            out[px_offset + 1] = g * 255;
+            out[px_offset + 2] = b * 255;
             out[px_offset + 3] = 255;
         }
     }
