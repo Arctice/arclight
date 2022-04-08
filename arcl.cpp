@@ -113,27 +113,53 @@ private:
     const ray& ray;
 };
 
-std::optional<intersection> intersect(const triangle& V, const ray& ray) {
-    auto BA = V.B - V.A;
-    auto CA = V.C - V.A;
+// woop et al 2013
+std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
+    auto rd = ray.direction;
+    auto kz = std::abs(rd.x) > std::abs(rd.y)
+                  ? (std::abs(rd.x) > std::abs(rd.z) ? 0 : 2)
+                  : (std::abs(rd.z) > std::abs(rd.y) ? 2 : 1);
+    auto kx = (kz + 1) % 3;
+    auto ky = (kx + 1) % 3;
+    if (rd[kz] < 0)
+        std::swap(kx, ky);
+
+    auto Sx = rd[kx] / rd[kz];
+    auto Sy = rd[ky] / rd[kz];
+    auto Sz = 1 / rd[kz];
+
+    auto A = (tri.A - ray.origin);
+    auto B = (tri.B - ray.origin);
+    auto C = (tri.C - ray.origin);
+
+    auto Ax = A[kx] - Sx * A[kz];
+    auto Ay = A[ky] - Sy * A[kz];
+    auto Bx = B[kx] - Sx * B[kz];
+    auto By = B[ky] - Sy * B[kz];
+    auto Cx = C[kx] - Sx * C[kz];
+    auto Cy = C[ky] - Sy * C[kz];
+
+    auto U = Cx * By - Cy * Bx;
+    auto V = Ax * Cy - Ay * Cx;
+    auto W = Bx * Ay - By * Ax;
+    auto det = U + V + W;
+
+    if (U < 0 or V < 0 or W < 0 or det == 0)
+        return {};
+
+    auto Az = Sz * A[kz];
+    auto Bz = Sz * B[kz];
+    auto Cz = Sz * C[kz];
+    auto T = U * Az + V * Bz + W * Cz;
+
+    if (T <= 0)
+        return {};
+
+    auto t = T / det;
+
+    auto BA = tri.B - tri.A;
+    auto CA = tri.C - tri.A;
     auto n = BA.cross(CA);
-    auto q = ray.direction.cross(CA);
-    auto a = BA.dot(q);
-    if (n.dot(ray.direction) >= 0 or std::abs(a) <= epsilon)
-        return {};
-
-    auto s = (ray.origin - V.A) / a;
-    auto r = s.cross(BA);
-
-    auto b = vec3f{s.dot(q), r.dot(ray.direction), 0};
-    b.z = 1.0f - b.x - b.y;
-    if (b.x < 0.f or b.y < 0.f or b.z < 0.f)
-        return {};
-
-    auto t = CA.dot(r);
-    if (t < 0.f)
-        return {};
-
     return intersection{t, n.normalized()};
 }
 
@@ -305,7 +331,3 @@ int main(int argc, char** argv) {
 // camera view covered by x and y (-1, 1)
 // right-handed world coordinates
 // x and y horizontal, z vertical, positive upwards
-
-// scene definition
-// basic ray tracer
-// ray-triangle intersection

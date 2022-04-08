@@ -1,8 +1,8 @@
 
 [film]
-resolution = [600, 600]
-supersampling = 6
-depth = 8
+resolution = [800, 800]
+supersampling = 8
+depth = 10
 
 [camera]
 type = "orthographic"
