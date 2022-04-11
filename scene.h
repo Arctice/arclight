@@ -5,6 +5,7 @@
 
 struct material{
     std::optional<vec3f> light;
+    vec3f reflectance{};
 };
 
 struct ray {
@@ -14,10 +15,18 @@ struct ray {
     vec3f distance(Float t) const { return origin + direction * t; }
 };
 
+struct shading_frame {
+    vec3f dpdu, dpdv;
+
+    vec3f to_local(vec3f) const;
+    vec3f to_world(vec3f) const;
+};
+
 struct intersection {
     Float distance;
     vec3f normal;
-    material* m{};
+    shading_frame shading;
+    material* mat{};
 };
 
 struct BVH {
@@ -185,6 +194,42 @@ struct transform {
         return {m, i};
     }
 
+    static transform rotate_x(Float a) {
+        auto m = matrix_sq4::identity();
+        auto cos_a = std::cos(-a);
+        auto sin_a = std::sin(-a);
+        m.m[1][1] = cos_a;
+        m.m[1][2] = -sin_a;
+        m.m[2][1] = sin_a;
+        m.m[2][2] = cos_a;
+        auto i = matrix_sq4::identity();
+        cos_a = std::cos(a);
+        sin_a = std::sin(a);
+        i.m[1][1] = cos_a;
+        i.m[1][2] = -sin_a;
+        i.m[2][1] = sin_a;
+        i.m[2][2] = cos_a;
+        return {m, i};
+    }
+
+    static transform rotate_y(Float a) {
+        auto m = matrix_sq4::identity();
+        auto cos_a = std::cos(-a);
+        auto sin_a = std::sin(-a);
+        m.m[0][0] = cos_a;
+        m.m[0][2] = -sin_a;
+        m.m[2][0] = sin_a;
+        m.m[2][2] = cos_a;
+        auto i = matrix_sq4::identity();
+        cos_a = std::cos(a);
+        sin_a = std::sin(a);
+        i.m[0][0] = cos_a;
+        i.m[0][2] = -sin_a;
+        i.m[2][0] = sin_a;
+        i.m[2][2] = cos_a;
+        return {m, i};
+    }
+
     static transform rotate_z(Float a) {
         auto m = matrix_sq4::identity();
         auto cos_a = std::cos(-a);
@@ -231,7 +276,6 @@ struct camera {
     ray point(vec2f px) {
         auto o = raster_to_camera.point({px.x, px.y, 0});
         return camera_to_world(ray{o, {0, 0, 1}});
-        return ray{{0, 0, 0}, {1, 1, 1}};
     }
 };
 
@@ -255,7 +299,13 @@ struct node_instance {
 
 std::unique_ptr<node_instance> instance(const transform& T, const node& n);
 
+enum class integrator {
+    brute_force,
+    path,
+};
+
 struct film {
+    integrator method;
     vec2<int> resolution;
     int supersampling;
     int depth;

@@ -1,7 +1,8 @@
 
 [film]
+method = "path"
 resolution = [600, 600]
-supersampling = 16
+supersampling = 64
 global_radiance = 0
 
 [camera]
@@ -12,7 +13,8 @@ towards = [0.0, 0.2, 0.1]
 up = [0, 1, 0]
 
 [material.light]
-light = [40, 40, 40]
+light = [16, 16, 16]
+
 [node.overcast]
 material = "light"
 triangle = [[-1, 0, -1], [1, 0, -1], [-1, 0, 1]]

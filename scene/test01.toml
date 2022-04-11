@@ -1,21 +1,22 @@
 
 [film]
+method = "path"
 resolution = [400, 400]
-supersampling = 12
-global_radiance = 1
+supersampling = 128
+global_radiance = 0
 
 [camera]
 type = "orthographic"
-scale = 8.0
-position = [0, -8, 10]
-towards = [0, 0, 5]
+scale = 8
+position = [-6, -8, 10]
+towards = [0, 5, 3]
 up = [0, 0, 1]
 
 [model.sphere]
 file = "sphere.ply"
 
 [material.light]
-light = [20, 20, 20]
+light = [1, 1, 1]
 
 [node.light]
 instance = "model.sphere"
@@ -43,13 +44,7 @@ instance = "node.plate"
 transform = [["translate", [0, -6, 2]]]
 [[world]]
 instance = "node.plate"
-transform = [["translate", [0, -3, 2]]]
-[[world]]
-instance = "node.plate"
 transform = [["translate", [0, 0, 2]]]
-[[world]]
-instance = "node.plate"
-transform = [["translate", [0, 3, 2]]]
 [[world]]
 instance = "node.plate"
 transform = [["translate", [0, 6, 2]]]
@@ -57,13 +52,4 @@ transform = [["translate", [0, 6, 2]]]
 [[world]]
 instance = "node.light"
 transform = [["scale", 1.6], ["translate", [-6, 7, 6]]]
-[[world]]
-instance = "node.light"
-transform = [["scale", 0.8], ["translate", [-2, 7, 6]]]
-[[world]]
-instance = "node.light"
-transform = [["scale", 0.4], ["translate", [2, 7, 6]]]
-[[world]]
-instance = "node.light"
-transform = [["scale", 0.2], ["translate", [6, 7, 6]]]
 

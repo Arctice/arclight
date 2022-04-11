@@ -14,8 +14,8 @@ using u64 = std::uint64_t;
 using Float = float;
 using vec2f = vec2<Float>;
 using vec3f = vec3<Float>;
-constexpr Float epsilon = std::numeric_limits<Float>::epsilon() * 0.5;
-constexpr Float pi = 3.14159265359;
+constexpr Float ɛ = std::numeric_limits<Float>::epsilon() * 0.5;
+constexpr Float π = 3.14159265358979323846;
 
 struct bounding_box {
     vec3f min, max;

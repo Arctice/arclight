@@ -25,6 +25,12 @@ transform parse_transform(const toml::array& ts) {
         else if (name == "scale") {
             T = transform::scale(*value.value<Float>()).compose(T);
         }
+        else if (name == "rotate-x") {
+            T = transform::rotate_x(*value.value<Float>()).compose(T);
+        }
+        else if (name == "rotate-y") {
+            T = transform::rotate_y(*value.value<Float>()).compose(T);
+        }
         else if (name == "rotate-z") {
             T = transform::rotate_z(*value.value<Float>()).compose(T);
         }
@@ -84,10 +90,19 @@ scene load_scene(std::string path) {
 
     auto config = toml::parse_file(path);
 
-    auto resolution = parse_vec2<int>(config["film"]["resolution"]);
-    auto supersampling = config["film"]["supersampling"].value_or(8);
-    auto depth = config["film"]["depth"].value_or(6);
-    auto global_radiance = config["film"]["global_radiance"].value_or<Float>(8);
+    film scene_film{};
+    auto method = config["film"]["method"].value_or<std::string>("path");
+    if (method == "path")
+        scene_film.method = integrator::path;
+    else if (method == "brute_force")
+        scene_film.method = integrator::brute_force;
+    else
+        throw std::runtime_error(fmt::format("bad integration method {}", method));
+
+    scene_film.resolution = parse_vec2<int>(config["film"]["resolution"]);
+    scene_film.supersampling = config["film"]["supersampling"].value_or(8);
+    scene_film.depth = config["film"]["depth"].value_or(6);
+    scene_film.global_radiance = config["film"]["global_radiance"].value_or<Float>(1);
 
     auto cam_config = config["camera"];
     auto cam_type = *cam_config["type"].value_exact<std::string>();
@@ -96,8 +111,8 @@ scene load_scene(std::string path) {
     auto cam_towards = parse_vec3<Float>(cam_config["towards"]);
     auto cam_up = parse_vec3<Float>(cam_config["up"]);
 
-    auto view = orthographic_camera(vec2f{resolution}, cam_scale, cam_pos,
-                                    cam_towards, cam_up);
+    auto view = orthographic_camera(vec2f{scene_film.resolution}, cam_scale,
+                                    cam_pos, cam_towards, cam_up);
 
     std::unordered_map<std::string, node> nodes;
 
@@ -126,9 +141,14 @@ scene load_scene(std::string path) {
             if (not vt)
                 continue;
 
-            auto m = material{};
+            auto m = material{
+                .light = {},
+                .reflectance = {0.5},
+            };
             if (vt->contains("light"))
                 m.light = parse_vec3<Float>((*vt)["light"]);
+            if (vt->contains("reflectance"))
+                m.reflectance = parse_vec3<Float>((*vt)["reflectance"]);
             materials[std::string(k.data())] = std::make_unique<material>(m);
         }
 
@@ -161,7 +181,6 @@ scene load_scene(std::string path) {
     std::vector<std::unique_ptr<material>> mats_vec;
     for (auto& [name, mat] : materials) mats_vec.push_back(std::move(mat));
 
-    return scene{film{resolution, supersampling, depth, global_radiance},
-                 node{std::move(root)}, camera{view}, std::move(assets),
-                 std::move(mats_vec)};
+    return scene{scene_film, node{std::move(root)}, camera{view},
+                 std::move(assets), std::move(mats_vec)};
 }

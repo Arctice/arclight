@@ -1,7 +1,7 @@
 
 [film]
-resolution = [400, 400]
-supersampling = 16
+resolution = [600, 600]
+supersampling = 32
 depth = 10
 global_radiance = 0
 
@@ -17,7 +17,13 @@ up = [0, 1, 0]
 file = "bun_zipper.ply"
 
 [material.light]
-light = [40, 40, 40]
+light = [4, 4, 4]
+
+[material.A]
+reflectance = [1, 1, 1]
+
+[material.B]
+reflectance = [0.2, 0.2, 0.2]
 
 [node.pair]
 group = true
@@ -25,6 +31,7 @@ group = true
 instance = "model.bunny"
 transform = [["translate", [0.08, 0.02, 0.1]], ["scale", 1.2]]
 [node.pair.b]
+material = "A"
 instance = "model.bunny"
 transform = [["translate", [-0.03, -0.04, -0.01]], ["scale", 0.8], ["rotate-z", -0.1]]
 
@@ -49,6 +56,7 @@ transform = [["rotate-z", -0.3], ["translate", [-0.01, -0.01, -0.13]]]
 instance = "node.pair"
 transform = [["rotate-z", 0.2]]
 [[world]]
+material = "B"
 instance = "node.pair"
 transform = [["rotate-z", 0.4]]
 [[world]]
