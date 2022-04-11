@@ -33,14 +33,22 @@ transform parse_transform(const toml::array& ts) {
     return T;
 }
 
-node parse_node(const std::unordered_map<std::string, node>& nodes,
-                const toml::table& nt) {
+node parse_node(
+    const std::unordered_map<std::string, node>& nodes,
+    const std::unordered_map<std::string, std::unique_ptr<material>>& mats,
+    const toml::table& nt) {
+
+    material* material{};
+    if (nt.contains("material")){
+        material = mats.at(*nt["material"].value<std::string>()).get();
+    }
+
     if (nt.contains("group")) {
         auto group = std::make_unique<node_bvh>();
 
         for (auto& [k, v] : nt) {
             if (v.is_table()) {
-                group->nodes.push_back(parse_node(nodes, *v.as_table()));
+                group->nodes.push_back(parse_node(nodes, mats, *v.as_table()));
             }
         }
 
@@ -48,7 +56,7 @@ node parse_node(const std::unordered_map<std::string, node>& nodes,
             return node_bounds(group->nodes[n]);
         });
 
-        return group;
+        return {{std::move(group)}, material};
     }
 
     else if (nt.contains("instance")) {
@@ -56,7 +64,7 @@ node parse_node(const std::unordered_map<std::string, node>& nodes,
         if (nt.contains("transform") and nt["transform"].is_array())
             transform = parse_transform(*nt.at("transform").as_array());
         auto instance_of = *nt["instance"].value<std::string>();
-        return instance(transform, nodes.at(instance_of));
+        return {instance(transform, nodes.at(instance_of)), material};
     }
 
     else if (nt.contains("triangle")) {
@@ -65,7 +73,7 @@ node parse_node(const std::unordered_map<std::string, node>& nodes,
         t->A = parse_vec3<Float>(toml::node_view<toml::node>(vx[0]));
         t->B = parse_vec3<Float>(toml::node_view<toml::node>(vx[1]));
         t->C = parse_vec3<Float>(toml::node_view<toml::node>(vx[2]));
-        return t;
+        return {std::move(t), material};
     }
 
     return {};
@@ -79,6 +87,7 @@ scene load_scene(std::string path) {
     auto resolution = parse_vec2<int>(config["film"]["resolution"]);
     auto supersampling = config["film"]["supersampling"].value_or(8);
     auto depth = config["film"]["depth"].value_or(6);
+    auto global_radiance = config["film"]["global_radiance"].value_or<Float>(8);
 
     auto cam_config = config["camera"];
     auto cam_type = *cam_config["type"].value_exact<std::string>();
@@ -108,6 +117,21 @@ scene load_scene(std::string path) {
             nodes["model." + std::string(k.data())] = node{std::move(m)};
         }
 
+    std::unordered_map<std::string, std::unique_ptr<material>> materials;
+    auto material_table = config["material"].as_table();
+    if (material_table)
+        for (auto [k, v] : *material_table) {
+
+            auto vt = v.as_table();
+            if (not vt)
+                continue;
+
+            auto m = material{};
+            if (vt->contains("light"))
+                m.light = parse_vec3<Float>((*vt)["light"]);
+            materials[std::string(k.data())] = std::make_unique<material>(m);
+        }
+
     auto node_table = config["node"].as_table();
     if (node_table)
         for (auto& [k, v] : *config["node"].as_table()) {
@@ -116,14 +140,14 @@ scene load_scene(std::string path) {
                 continue;
 
             auto name = "node." + std::string(k.data());
-            nodes[name] = parse_node(nodes, *vt);
+            nodes[name] = parse_node(nodes, materials, *vt);
         }
 
     auto root = std::make_unique<node_bvh>();
 
     auto world = *config["world"].as_array();
     for (auto& x : world) {
-        root->nodes.push_back(parse_node(nodes, *x.as_table()));
+        root->nodes.push_back(parse_node(nodes, materials, *x.as_table()));
     }
 
     fmt::print("world bvh... \n");
@@ -134,8 +158,10 @@ scene load_scene(std::string path) {
     std::vector<node> assets;
     for (auto& [name, node] : nodes) assets.push_back(std::move(node));
 
-    return {{resolution, supersampling, depth},
-            std::move(root),
-            view,
-            std::move(assets)};
+    std::vector<std::unique_ptr<material>> mats_vec;
+    for (auto& [name, mat] : materials) mats_vec.push_back(std::move(mat));
+
+    return scene{film{resolution, supersampling, depth, global_radiance},
+                 node{std::move(root)}, camera{view}, std::move(assets),
+                 std::move(mats_vec)};
 }

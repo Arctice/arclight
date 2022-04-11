@@ -3,6 +3,10 @@
 #include <variant>
 #include <numeric>
 
+struct material{
+    std::optional<vec3f> light;
+};
+
 struct ray {
     vec3f origin;
     vec3f direction;
@@ -13,12 +17,35 @@ struct ray {
 struct intersection {
     Float distance;
     vec3f normal;
+    material* m{};
 };
 
 struct BVH {
     bounding_box bounds;
     std::vector<int> overlap;
     std::unique_ptr<BVH> a, b;
+};
+
+struct bvh_mesh {
+    indexed_mesh data;
+    BVH bvh;
+};
+
+struct node_bvh;
+struct node_instance;
+
+struct node {
+    std::variant<std::unique_ptr<triangle>, std::unique_ptr<bvh_mesh>,
+                 std::unique_ptr<node_bvh>, std::unique_ptr<node_instance>>
+        shape;
+    material* material{};
+};
+
+struct node_view {
+    std::variant<const triangle*, const bvh_mesh*, const node_bvh*,
+                 const node_instance*>
+        shape;
+    material* material{};
 };
 
 template <class Fn> std::pair<int, Float>
@@ -73,20 +100,6 @@ template <class Fn> BVH build_bvh(const size_t size, Fn&& bound) {
     std::iota(indices.begin(), indices.end(), 0);
     return build_bvh(indices, bound);
 }
-
-struct bvh_mesh {
-    indexed_mesh data;
-    BVH bvh;
-};
-
-struct node_bvh;
-struct node_instance;
-
-using node =
-    std::variant<std::unique_ptr<triangle>, std::unique_ptr<bvh_mesh>,
-                 std::unique_ptr<node_bvh>, std::unique_ptr<node_instance>>;
-using node_view = std::variant<const triangle*, const bvh_mesh*,
-                               const node_bvh*, const node_instance*>;
 
 bounding_box node_bounds(const node& n);
 std::optional<intersection> intersect(const node& n, const ray& r);
@@ -232,7 +245,9 @@ struct node_bvh {
 
 struct node_instance {
     node_instance(transform T, const node& n) : T(T) {
-        this->n = std::visit([](auto& n) { return node_view{n.get()}; }, n);
+        this->n =
+            std::visit([](auto& s) { return node_view{{s.get()}}; }, n.shape);
+        this->n.material = n.material;
     }
     transform T;
     node_view n;
@@ -244,6 +259,7 @@ struct film {
     vec2<int> resolution;
     int supersampling;
     int depth;
+    Float global_radiance;
 };
 
 struct scene {
@@ -251,6 +267,7 @@ struct scene {
     node root;
     camera view;
     std::vector<node> assets;
+    std::vector<std::unique_ptr<material>> materials;
 };
 
 std::unique_ptr<bvh_mesh> load_model(std::string path);

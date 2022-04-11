@@ -63,11 +63,11 @@ bounding_box node_bounds(const bvh_mesh& n) { return n.bvh.bounds; }
 bounding_box node_bounds(const node_bvh& n) { return n.bvh.bounds; }
 
 bounding_box node_bounds(const node& n) {
-    return std::visit([](const auto& n) { return node_bounds(*n); }, n);
+    return std::visit([](const auto& n) { return node_bounds(*n); }, n.shape);
 }
 
 bounding_box node_bounds(const node_view& n) {
-    return std::visit([](const auto& n) { return node_bounds(*n); }, n);
+    return std::visit([](const auto& n) { return node_bounds(*n); }, n.shape);
 }
 
 std::optional<intersection> intersect(const triangle&, const ray&);
@@ -78,17 +78,26 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r) {
     auto hit = intersect(i.n, ri);
     if (not hit)
         return {};
-    return intersection{hit->distance, i.T.normal(hit->normal).normalized()};
+    return intersection{hit->distance, i.T.normal(hit->normal).normalized(),
+                        hit->m};
 }
 
 std::optional<intersection> intersect(const node_bvh&, const ray&);
 
 std::optional<intersection> intersect(const node& n, const ray& r) {
-    return std::visit([r](const auto& n) { return intersect(*n, r); }, n);
+    auto i =
+        std::visit([r](const auto& n) { return intersect(*n, r); }, n.shape);
+    if (i and n.material)
+        i->m = n.material;
+    return i;
 }
 
 std::optional<intersection> intersect(const node_view& n, const ray& r) {
-    return std::visit([r](const auto& n) { return intersect(*n, r); }, n);
+    auto i =
+        std::visit([r](const auto& n) { return intersect(*n, r); }, n.shape);
+    if (i and n.material)
+        i->m = n.material;
+    return i;
 }
 
 struct bvh_traversal {
@@ -236,9 +245,16 @@ bool same_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
 light naive_trace(scene& scene, ray r, int depth) {
     auto intersection = intersect(scene.root, r);
     if (not intersection)
-        return {8};
+        return {scene.film.global_radiance};
+
+
+    vec3f Le{};
+    if (intersection->m and intersection->m->light){
+        Le = *intersection->m->light;
+    }
+
     if (0 == depth)
-        return {};
+        return Le;
 
     auto inorm = intersection->normal;
     auto scatter_d = sample_uniform_direction().normalized();
@@ -246,13 +262,13 @@ light naive_trace(scene& scene, ray r, int depth) {
     auto f = icos / pi;
 
     if (f <= 0 or not same_hemisphere(inorm, scatter_d))
-        return {};
+        return Le;
 
     auto reflection_point = r.distance(intersection->distance);
     auto scatter_ray = ray{reflection_point + inorm * epsilon, scatter_d};
 
     auto Li = naive_trace(scene, scatter_ray, depth - 1);
-    return Li * f;
+    return Li * f + Le;
 }
 
 light debug_trace(scene& scene, ray r) {

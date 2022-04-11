@@ -1,8 +1,10 @@
 
 [film]
-resolution = [800, 800]
-supersampling = 8
+resolution = [400, 400]
+supersampling = 16
 depth = 10
+global_radiance = 0
+
 
 [camera]
 type = "orthographic"
@@ -13,6 +15,9 @@ up = [0, 1, 0]
 
 [model.bunny]
 file = "bun_zipper.ply"
+
+[material.light]
+light = [40, 40, 40]
 
 [node.pair]
 group = true
@@ -30,6 +35,9 @@ triangle = [[-0.1, 0, -0.1], [-0.1, 0, 0.1], [0.1, 0, -0.1]]
 [node.floor.b]
 triangle = [[0.1, 0, -0.1], [-0.1, 0, 0.1], [0.1, 0, 0.1]]
 
+[node.overcast]
+triangle = [[-0.1, 0, -0.1], [0.1, 0, -0.1], [-0.1, 0, 0.1]]
+
 
 [[world]]
 instance = "node.pair"
@@ -46,4 +54,8 @@ transform = [["rotate-z", 0.4]]
 [[world]]
 instance = "node.floor"
 transform = [["scale", 1.4]]
+[[world]]
+material = "light"
+instance = "node.overcast"
+transform = [["scale", 30], ["translate", [0, 2, 0]]]
 

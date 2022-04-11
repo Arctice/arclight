@@ -1,0 +1,69 @@
+
+[film]
+resolution = [400, 400]
+supersampling = 12
+global_radiance = 1
+
+[camera]
+type = "orthographic"
+scale = 8.0
+position = [0, -8, 10]
+towards = [0, 0, 5]
+up = [0, 0, 1]
+
+[model.sphere]
+file = "sphere.ply"
+
+[material.light]
+light = [20, 20, 20]
+
+[node.light]
+instance = "model.sphere"
+material = "light"
+
+[node.plate]
+group = true
+[node.plate.a]
+triangle = [[-7, -1, 0], [7, -1, 0], [-7, 1, 0]]
+[node.plate.b]
+triangle = [[7, -1, 0], [7, 1, 0], [-7, 1, 0]]
+
+[[world]]
+triangle = [[-10, -10, 0], [10, -10, 0], [-10, 10, 0]]
+[[world]]
+triangle = [[10, -10, 0], [10, 10, 0], [-10, 10, 0]]
+
+[[world]]
+triangle = [[-10, 10, 0], [10, 10, 0], [-10, 10, 10]]
+[[world]]
+triangle = [[-10, 10, 10], [10, 10, 0], [10, 10, 10]]
+
+[[world]]
+instance = "node.plate"
+transform = [["translate", [0, -6, 2]]]
+[[world]]
+instance = "node.plate"
+transform = [["translate", [0, -3, 2]]]
+[[world]]
+instance = "node.plate"
+transform = [["translate", [0, 0, 2]]]
+[[world]]
+instance = "node.plate"
+transform = [["translate", [0, 3, 2]]]
+[[world]]
+instance = "node.plate"
+transform = [["translate", [0, 6, 2]]]
+
+[[world]]
+instance = "node.light"
+transform = [["scale", 1.6], ["translate", [-6, 7, 6]]]
+[[world]]
+instance = "node.light"
+transform = [["scale", 0.8], ["translate", [-2, 7, 6]]]
+[[world]]
+instance = "node.light"
+transform = [["scale", 0.4], ["translate", [2, 7, 6]]]
+[[world]]
+instance = "node.light"
+transform = [["scale", 0.2], ["translate", [6, 7, 6]]]
+

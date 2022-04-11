@@ -1,23 +1,34 @@
 
 [film]
 resolution = [600, 600]
+supersampling = 16
+global_radiance = 0
 
 [camera]
 type = "orthographic"
 scale = 1.0
-position = [5, 6, -4]
-towards = [-0.03, 0.11, 0]
+position = [5, 4, -4]
+towards = [0.0, 0.2, 0.1]
 up = [0, 1, 0]
+
+[material.light]
+light = [40, 40, 40]
+[node.overcast]
+material = "light"
+triangle = [[-1, 0, -1], [1, 0, -1], [-1, 0, 1]]
 
 [model.dragon]
 file = "dragon.ply"
 
 [[world]]
 instance = "model.dragon"
-transform = [["scale", 0.01]]
+transform = [["translate", [0, 40, 0]], ["scale", 0.01]]
 
 [[world]]
-instance = "model.dragon"
-transform = [["scale", 0.01],
-             ["translate", [-0.4, 0.5, 0.5]],
-             ["rotate-z", -0.4]]
+triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
+[[world]]
+triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
+
+[[world]]
+instance = "node.overcast"
+transform = [["translate", [0.2, 2, 0.1]], ["scale", 12]]
