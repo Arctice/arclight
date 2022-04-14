@@ -26,3 +26,4 @@ DerivePointerAlignment: false
 SortIncludes: false
 IncludeBlocks: Preserve
 
+FixNamespaceComments: false

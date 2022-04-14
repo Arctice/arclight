@@ -1,6 +1,7 @@
 #include "base.h"
 #include "scene.h"
 #include "rng.h"
+#include "tev_ipc.h"
 
 #include <array>
 #include <queue>
@@ -417,9 +418,6 @@ int main(int argc, char** argv) {
     auto resolution = scene.film.resolution;
     fmt::print("loaded {}\n", *scene_path);
 
-    std::vector<unsigned char> out;
-    out.resize(4 * resolution.y * resolution.x);
-
     auto trace = [&scene, debug]() {
         if (debug)
             return debug_trace;
@@ -429,32 +427,59 @@ int main(int argc, char** argv) {
         }
     }();
 
-#pragma omp parallel for schedule(monotonic : dynamic)
-    for (int y = 0; y < resolution.y; ++y) {
-        for (int x = 0; x < resolution.x; ++x) {
-            auto px = vec2{x, y};
+    std::vector<light> light_total{};
+    std::vector<float> image;
+    light_total.resize(resolution.x * resolution.y);
+    image.resize(3 * resolution.y * resolution.x);
 
-            light light{};
-
-            for (int s{}; s < scene.film.supersampling; ++s) {
-                auto jitter = sample_2d();
-                auto ray = scene.view.point(vec2f{px} + jitter);
-                light += trace(scene, ray, scene.film.depth);
-            }
-            light /= scene.film.supersampling;
-
-            auto [r, g, b] = light_to_rgb(light);
-
-            auto px_offset = 4 * (y * resolution.x + x);
-            out[px_offset + 0] = r * 255;
-            out[px_offset + 1] = g * 255;
-            out[px_offset + 2] = b * 255;
-            out[px_offset + 3] = 255;
+    auto tev = std::optional<ipc::tev>{};
+    if (arg_present("--tev")) {
+        try {
+            tev.emplace();
+            tev->create_rgb_image(*scene_path, resolution.x, resolution.y);
+        }
+        catch (std::exception& err) {
+            fmt::print("tev connection failed, image output only\n");
         }
     }
+
+    for (int s{}; s < scene.film.supersampling; ++s) {
+#pragma omp parallel for schedule(monotonic : dynamic)
+        for (int y = 0; y < resolution.y; ++y) {
+            for (int x = 0; x < resolution.x; ++x) {
+                auto px = vec2{x, y};
+                auto jitter = sample_2d();
+                auto ray = scene.view.point(vec2f{px} + jitter);
+                auto light = trace(scene, ray, scene.film.depth);
+
+                auto px_offset = (y * resolution.x + x);
+                light_total[px_offset] += light;
+
+                auto [r, g, b] = light_total[px_offset] / (s + 1);
+                px_offset *= 3;
+                image[px_offset + 0] = r;
+                image[px_offset + 1] = g;
+                image[px_offset + 2] = b;
+            }
+        }
+
+        if (tev)
+            tev->update_rgb_image(*scene_path, 0, 0, resolution.x, resolution.y,
+                                  image);
+    }
+
+    std::vector<unsigned char> out;
+    out.resize(4 * resolution.y * resolution.x);
+    for (int px = 0; px < resolution.y * resolution.x; ++px) {
+        auto light = light_total[px] / scene.film.supersampling;
+        auto [r, g, b] = light_to_rgb(light);
+        out[px * 4 + 0] = r * 255;
+        out[px * 4 + 1] = g * 255;
+        out[px * 4 + 2] = b * 255;
+        out[px * 4 + 3] = 255;
+    }
     sf::Image img;
-    img.create((unsigned int)(resolution.x), (unsigned int)(resolution.y),
-               out.data());
+    img.create((u32)(resolution.x), (u32)(resolution.y), out.data());
     img.saveToFile("out.png");
 }
 
@@ -466,7 +491,7 @@ int main(int argc, char** argv) {
 // todo:
 // multithreaded deterministic rng
 // glossy brdf
-// rendering preview
+// light sampling
 // comparison tests
 // adaptive sampling, convergence metering
 // perspective camera
