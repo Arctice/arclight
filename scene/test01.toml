@@ -16,6 +16,7 @@ up = [0, 0, 1]
 file = "sphere.ply"
 
 [material.light]
+type = "emissive"
 light = [1, 1, 1]
 
 [node.light]

@@ -1,0 +1,24 @@
+
+[film]
+method = "path"
+resolution = [200, 200]
+supersampling = 256
+global_radiance = 1
+
+[camera]
+type = "orthographic"
+scale = 1
+position = [10, 0, 0]
+towards = [0, 0, 0]
+up = [0, 0, 1]
+
+[model.sphere]
+file = "sphere.ply"
+
+[material.white]
+type = "lambertian"
+reflectance = [1, 1, 1]
+
+[[world]]
+material = "white"
+instance = "model.sphere"

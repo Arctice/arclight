@@ -1,70 +1,107 @@
-
 [film]
 method = "path"
 resolution = [600, 600]
-supersampling = 128
+supersampling = 16
 global_radiance = 0.03
 
 [camera]
 type = "orthographic"
-scale = 8
-position = [0, -8, 9]
+scale = 9
+position = [0, -5, 10]
 towards = [0, 5, 2]
 up = [0, 0, 1]
+
+[[world]]
+triangle = [[-100, -100, 0], [100, -100, 0], [-100, 100, 0]]
+[[world]]
+triangle = [[100, -100, 0], [100, 100, 0], [-100, 100, 0]]
+
+[[world]]
+triangle = [[-100, 10, 0], [100, 10, 0], [-100, 10, 100]]
+[[world]]
+triangle = [[-100, 10, 100], [100, 10, 0], [100, 10, 100]]
 
 [model.sphere]
 file = "sphere.ply"
 
 [material.light]
+type = "emissive"
 light = [2, 2, 2]
 
 [node.light]
 instance = "model.sphere"
 material = "light"
 
+[[world]]
+instance = "node.light"
+transform = [["scale", 1.6], ["translate", [-6, 8, 8]]]
+[[world]]
+instance = "node.light"
+transform = [["scale", 0.8], ["translate", [-2, 8, 8]]]
+[[world]]
+instance = "node.light"
+transform = [["scale", 0.4], ["translate", [2, 8, 8]]]
+[[world]]
+instance = "node.light"
+transform = [["scale", 0.2], ["translate", [6, 8, 8]]]
+
+
 [node.plate]
 group = true
 [node.plate.a]
-triangle = [[-7, -1, 0], [7, -1, 0], [-7, 1, 0]]
+triangle = [[-8, -1, 0], [8, -1, 0], [-8, 1, 0]]
 [node.plate.b]
-triangle = [[7, -1, 0], [7, 1, 0], [-7, 1, 0]]
+triangle = [[8, -1, 0], [8, 1, 0], [-8, 1, 0]]
+
+[material.G1]
+type = "glossy"
+roughness = 0.16
+refraction = [10, 10, 10]
+absorption = [0.1, 0.1, 0.1]
+
+[material.G2]
+type = "glossy"
+roughness = 0.08
+refraction = [10, 10, 10]
+absorption = [0.1, 0.1, 0.1]
+
+[material.G3]
+type = "glossy"
+roughness = 0.04
+refraction = [10, 10, 10]
+absorption = [0.1, 0.1, 0.1]
+
+[material.G4]
+type = "glossy"
+roughness = 0.02
+refraction = [10, 10, 10]
+absorption = [0.1, 0.1, 0.1]
+
+[material.G5]
+type = "glossy"
+roughness = 0.01
+refraction = [10, 10, 10]
+absorption = [0.1, 0.1, 0.1]
+
 
 [[world]]
-triangle = [[-10, -10, 0], [10, -10, 0], [-10, 10, 0]]
-[[world]]
-triangle = [[10, -10, 0], [10, 10, 0], [-10, 10, 0]]
-
-[[world]]
-triangle = [[-10, 10, 0], [10, 10, 0], [-10, 10, 10]]
-[[world]]
-triangle = [[-10, 10, 10], [10, 10, 0], [10, 10, 10]]
-
-[[world]]
+material = "G1"
 instance = "node.plate"
-transform = [["rotate-x", -0.2], ["translate", [0, -6, 2]]]
+transform = [["rotate-x", 0.08], ["translate", [0, -3, 1.6]]]
 [[world]]
+material = "G2"
 instance = "node.plate"
-transform = [["rotate-x", -0.3], ["translate", [0, -3, 2.5]]]
+transform = [["rotate-x", 0.02], ["translate", [0, -0.5, 1.7]]]
 [[world]]
+material = "G3"
 instance = "node.plate"
-transform = [["rotate-x", -0.4], ["translate", [0, 0, 3]]]
+transform = [["rotate-x", -0.05], ["translate", [0, 2, 2]]]
 [[world]]
+material = "G4"
 instance = "node.plate"
-transform = [["rotate-x", -0.5], ["translate", [0, 3, 3.5]]]
+transform = [["rotate-x", -0.16], ["translate", [0, 4.5, 2.5]]]
 [[world]]
+material = "G5"
 instance = "node.plate"
-transform = [["rotate-x", -0.6], ["translate", [0, 6, 4]]]
-
-[[world]]
-instance = "node.light"
-transform = [["scale", 1.6], ["translate", [-6, 7, 8]]]
-[[world]]
-instance = "node.light"
-transform = [["scale", 0.8], ["translate", [-2, 7, 8]]]
-[[world]]
-instance = "node.light"
-transform = [["scale", 0.4], ["translate", [2, 7, 8]]]
-[[world]]
-instance = "node.light"
-transform = [["scale", 0.2], ["translate", [6, 7, 8]]]
+transform = [["rotate-x", -0.34], ["translate", [0, 7, 3.3]]]
 

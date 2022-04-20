@@ -2,7 +2,7 @@
 [film]
 method = "path"
 resolution = [600, 600]
-supersampling = 64
+supersampling = 128
 global_radiance = 0
 
 [camera]
@@ -13,7 +13,14 @@ towards = [0.0, 0.2, 0.1]
 up = [0, 1, 0]
 
 [material.light]
+type = "emissive"
 light = [16, 16, 16]
+
+[material.metal]
+type = "glossy"
+roughness = 0.32
+refraction = [0.16, 0.35, 1.5]
+absorption = [4, 2.5, 1.9]
 
 [node.overcast]
 material = "light"
@@ -24,6 +31,7 @@ file = "dragon.ply"
 
 [[world]]
 instance = "model.dragon"
+material = "metal"
 transform = [["translate", [0, 40, 0]], ["scale", 0.01]]
 
 [[world]]

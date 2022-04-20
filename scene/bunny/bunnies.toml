@@ -3,7 +3,7 @@
 resolution = [600, 600]
 supersampling = 32
 depth = 10
-global_radiance = 0
+global_radiance = 0.02
 
 
 [camera]
@@ -17,12 +17,15 @@ up = [0, 1, 0]
 file = "bun_zipper.ply"
 
 [material.light]
-light = [4, 4, 4]
+type = "emissive"
+light = [2, 2, 2]
 
 [material.A]
+type = "lambertian"
 reflectance = [1, 1, 1]
 
 [material.B]
+type = "lambertian"
 reflectance = [0.2, 0.2, 0.2]
 
 [node.pair]

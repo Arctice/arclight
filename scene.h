@@ -3,10 +3,42 @@
 #include <variant>
 #include <numeric>
 
-struct material{
-    std::optional<vec3f> light;
-    vec3f reflectance{};
+using light = vec3f;
+
+struct emissive {
+    light value{1.};
 };
+
+struct lambertian {
+    light reflectance{0.5};
+};
+
+struct specular {
+    light refraction;
+    light absorption;
+};
+
+struct glossy {
+    Float roughness;
+    light refraction;
+    light absorption;
+};
+
+struct blinn_phong {
+    Float sharpness;
+    Float diffuse;
+    light diffuse_color;
+    light specular_color;
+};
+
+struct mixed_material;
+using material = std::variant<emissive, lambertian, specular, glossy,
+                              blinn_phong, mixed_material>;
+
+struct mixed_material {
+    std::vector<std::pair<Float, const material*>> layers;
+};
+
 
 struct ray {
     vec3f origin;
@@ -43,19 +75,17 @@ struct bvh_mesh {
 struct node_bvh;
 struct node_instance;
 
-struct node {
-    std::variant<std::unique_ptr<triangle>, std::unique_ptr<bvh_mesh>,
-                 std::unique_ptr<node_bvh>, std::unique_ptr<node_instance>>
+template <template <class> class Wrapper> struct node_body {
+    std::variant<Wrapper<triangle>, Wrapper<bvh_mesh>,
+                 Wrapper<node_bvh>, Wrapper<node_instance>>
         shape;
     material* material{};
 };
 
-struct node_view {
-    std::variant<const triangle*, const bvh_mesh*, const node_bvh*,
-                 const node_instance*>
-        shape;
-    material* material{};
-};
+template <class T> using node_wrapper = std::unique_ptr<T>;
+using node = node_body<node_wrapper>;
+template <class T> using node_view_wrapper = const T*;
+using node_view = node_body<node_view_wrapper>;
 
 template <class Fn> std::pair<int, Float>
 partition_dimension(const std::vector<int>& objs, Fn&& bound) {
@@ -203,11 +233,9 @@ struct transform {
         m.m[2][1] = sin_a;
         m.m[2][2] = cos_a;
         auto i = matrix_sq4::identity();
-        cos_a = std::cos(a);
-        sin_a = std::sin(a);
         i.m[1][1] = cos_a;
-        i.m[1][2] = -sin_a;
-        i.m[2][1] = sin_a;
+        i.m[2][1] = -sin_a;
+        i.m[1][2] = sin_a;
         i.m[2][2] = cos_a;
         return {m, i};
     }
@@ -221,11 +249,9 @@ struct transform {
         m.m[2][0] = sin_a;
         m.m[2][2] = cos_a;
         auto i = matrix_sq4::identity();
-        cos_a = std::cos(a);
-        sin_a = std::sin(a);
         i.m[0][0] = cos_a;
-        i.m[0][2] = -sin_a;
-        i.m[2][0] = sin_a;
+        i.m[0][2] = sin_a;
+        i.m[2][0] = -sin_a;
         i.m[2][2] = cos_a;
         return {m, i};
     }
@@ -239,11 +265,9 @@ struct transform {
         m.m[1][0] = sin_a;
         m.m[1][1] = cos_a;
         auto i = matrix_sq4::identity();
-        cos_a = std::cos(a);
-        sin_a = std::sin(a);
         i.m[0][0] = cos_a;
-        i.m[0][1] = -sin_a;
-        i.m[1][0] = sin_a;
+        i.m[0][1] = sin_a;
+        i.m[1][0] = -sin_a;
         i.m[1][1] = cos_a;
         return {m, i};
     }
@@ -316,8 +340,8 @@ struct scene {
     film film;
     node root;
     camera view;
-    std::vector<node> assets;
     std::vector<std::unique_ptr<material>> materials;
+    std::vector<node> assets;
 };
 
 std::unique_ptr<bvh_mesh> load_model(std::string path);

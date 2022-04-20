@@ -58,8 +58,16 @@ std::unique_ptr<node_instance> instance(const transform& T, const node& n) {
 bounding_box node_bounds(const triangle& n) { return shape_bounds(n); }
 bounding_box node_bounds(const node_instance& i) {
     auto [min, max] = node_bounds(i.n);
-    return {i.T.point(min), i.T.point(max)};
+    return bounding_box{} | i.T.point(min) | i.T.point(max) |
+           i.T.point(vec3f{max.x, min.y, min.z}) |
+           i.T.point(vec3f{min.x, max.y, min.z}) |
+           i.T.point(vec3f{min.x, min.y, max.z}) |
+           i.T.point(vec3f{min.x, max.y, max.z}) |
+           i.T.point(vec3f{max.x, min.y, max.z}) |
+           i.T.point(vec3f{max.x, max.y, min.z}) |
+           i.T.point(vec3f{max.x, max.y, max.z});
 }
+
 bounding_box node_bounds(const bvh_mesh& n) { return n.bvh.bounds; }
 bounding_box node_bounds(const node_bvh& n) { return n.bvh.bounds; }
 
@@ -78,7 +86,9 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r) {
     auto ri = Ti(r);
     auto hit = intersect(i.n, ri);
     if (hit) {
-        hit->normal = i.T.normal(hit->normal).normalized();
+        hit->normal = Ti.normal(hit->normal).normalized();
+        hit->shading.dpdu = i.T.vector(hit->shading.dpdu);
+        hit->shading.dpdv = i.T.vector(hit->shading.dpdv);
     }
     return hit;
 }
@@ -261,8 +271,6 @@ camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
     return c;
 }
 
-using light = vec3f;
-
 struct scatter_sample {
     light value;
     vec3f direction;
@@ -285,26 +293,269 @@ vec3f shading_frame::to_world(vec3f v) const {
     return bx * v.x + by * v.y + bz * v.z;
 }
 
-scatter_sample matte_scattering(const scene&, const intersection& isect,
-                                const vec3f&) {
+scatter_sample scatter(const scene&, const lambertian& matte,
+                       const intersection& isect, const vec3f&) {
     auto away = sample_cosine_hemisphere(sample_2d());
-
-    auto cos_theta = away.z;
-
-    light reflectance{.5};
-    if (isect.mat)
-        reflectance = isect.mat->reflectance;
-
+    auto angle_cos = away.z;
     return scatter_sample{
-        .value = reflectance / π,
+        .value = matte.reflectance / π,
         .direction = isect.shading.to_world(away),
-        .probability = std::abs(cos_theta) / π,
+        .probability = std::abs(angle_cos) / π,
     };
 }
 
-scatter_sample sample_scattering(const scene& scene, const intersection& isect,
-                                 const vec3f& towards) {
-    return matte_scattering(scene, isect, towards);
+scatter_sample scatter(const scene&, const lambertian& matte,
+                       const intersection& isect, const vec3f&,
+                       const vec3f& away) {
+    auto angle_cos = isect.shading.to_local(away).z;
+    return scatter_sample{
+        .value = matte.reflectance / π,
+        .direction = away,
+        .probability = std::abs(angle_cos) / π,
+    };
+}
+
+scatter_sample scatter(const scene&, const emissive&, const intersection&,
+                       const vec3f&) {
+    return scatter_sample{
+        .value = 0,
+        .direction = {0, 0, 1},
+        .probability = 1,
+    };
+}
+
+scatter_sample scatter(const scene&, const emissive&, const intersection&,
+                       const vec3f&, const vec3f&) {
+    return scatter_sample{
+        .value = 0,
+        .direction = {0, 0, 1},
+        .probability = 1,
+    };
+}
+
+scatter_sample scatter(const scene&, const blinn_phong&, const intersection&,
+                       const vec3f&, const vec3f&) {
+    throw;
+}
+
+scatter_sample scatter(const scene&, const blinn_phong& material,
+                       const intersection& isect, const vec3f& towards) {
+    auto away = sample_cosine_hemisphere(sample_2d());
+    auto angle_cos = away.z;
+    auto probability = std::abs(angle_cos) / π;
+
+    auto roughness = material.diffuse;
+    auto glossiness = (Float)material.sharpness;
+    light reflectance{material.diffuse_color};
+
+    auto diffuse = reflectance * roughness * (1 / π);
+
+    auto halfv = (away + isect.shading.to_local(towards)).normalized();
+    auto specular_intensity = std::pow(std::max<Float>(halfv.z, 0), glossiness);
+
+    auto energy_conservation = [](Float n) {
+        return ((n + 2) * (n + 4)) / (8 * π * (std::pow<Float>(2, -n / 2) + 2));
+    }(glossiness);
+
+    auto specular = material.specular_color * energy_conservation *
+                    specular_intensity * (1 - roughness);
+
+    auto value = (specular + diffuse);
+
+    return scatter_sample{
+        .value = value,
+        .direction = isect.shading.to_world(away),
+        .probability = probability,
+    };
+}
+
+Float beckmann_microfacet_area(Float roughness, Float a) {
+    auto t = std::tan(a);
+    if (std::isinf(t))
+        return 0;
+    auto r = roughness*roughness;
+    return std::exp(-(t * t) / r) / (π * r * std::pow(std::cos(a), 4));
+}
+
+Float beckmann_microfacet_lambda(Float roughness, Float t) {
+    auto a = 1 / (roughness * std::abs(std::tan(t)));
+    if ((Float)1.6 <= a)
+        return 0;
+    return 0.5 * (std::erf(a) - 1 + std::exp(-a * a) / (a * std::sqrt(π)));
+}
+
+Float beckmann_microfacet_geometry(Float roughness, Float a, Float b) {
+    auto A = 1 / (1 + beckmann_microfacet_lambda(roughness, a));
+    auto B = 1 / (1 + beckmann_microfacet_lambda(roughness, b));
+    return 1 / (1 + A + B);
+}
+
+auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
+    light Eta = etat / etai;
+    light Etak = k / etai;
+
+    float CosTheta2 = cos_t * cos_t;
+    float SinTheta2 = 1 - CosTheta2;
+    light Eta2 = Eta * Eta;
+    light Etak2 = Etak * Etak;
+
+    light t0 = Eta2 - Etak2 - SinTheta2;
+    light a2plusb2 = (t0 * t0 + Eta2 * Etak2 * 4);
+    a2plusb2 = {std::sqrt(a2plusb2.x), std::sqrt(a2plusb2.y),
+                std::sqrt(a2plusb2.z)};
+
+    light t1 = {a2plusb2.x + CosTheta2, a2plusb2.y + CosTheta2,
+                a2plusb2.z + CosTheta2};
+    light a = (a2plusb2 + t0) * (Float)0.5;
+    a = {std::sqrt(a.x), std::sqrt(a.y), std::sqrt(a.z)};
+    light t2 = a * 2 * cos_t;
+    light Rs = (t1 - t2) / (t1 + t2);
+
+    light t3 = a2plusb2 * CosTheta2 + SinTheta2 * SinTheta2;
+    light t4 = t2 * SinTheta2;
+    light Rp = Rs * (t3 - t4) / (t3 + t4);
+
+    return (Rp + Rs) * (Float)0.5;
+}
+
+scatter_sample scatter(const scene&, const specular& material,
+                       const intersection& isect, const vec3f& towards) {
+    auto to = isect.shading.to_local(towards);
+    auto away = (to * -1 + vec3f{0, 0, 2 * std::abs(to.z)});
+
+    auto reflectance = fresnel_conductor(
+        std::abs(to.z), {1}, material.refraction, material.absorption);
+
+    return scatter_sample{
+        .value = reflectance,
+        .direction = isect.shading.to_world(away),
+        .probability = std::numeric_limits<Float>::infinity(),
+    };
+}
+
+scatter_sample scatter(const scene&, const specular&, const intersection&,
+                       const vec3f&, const vec3f& away) {
+    return scatter_sample{
+        .value = 0,
+        .direction = away,
+        .probability = 0,
+    };
+}
+
+light glossy_reflection(const glossy& material, const vec3f& towards,
+                        const vec3f& away) {
+    auto halfv = (away + towards).normalized();
+    auto a = std::acos(away.z);
+    auto b = std::acos(towards.z);
+    auto h = std::acos(halfv.z);
+
+    auto F = fresnel_conductor(std::abs(away.dot(towards)), {1},
+                               material.refraction, material.absorption);
+
+    auto D = beckmann_microfacet_area(material.roughness, h);
+    auto G = beckmann_microfacet_geometry(material.roughness, a, b);
+
+    auto f = F * D * G / (4 * std::abs(away.z) * std::abs(towards.z));
+    return f;
+}
+
+scatter_sample scatter(const scene&, const glossy& material,
+                       const intersection& isect, const vec3f& towards) {
+    auto away = sample_cosine_hemisphere(sample_2d());
+    auto probability = std::abs(away.z) / π;
+
+    auto f = glossy_reflection(material, isect.shading.to_local(towards), away);
+
+    return scatter_sample{
+        .value = f,
+        .direction = isect.shading.to_world(away),
+        .probability = probability,
+    };
+}
+
+scatter_sample scatter(const scene&, const glossy& material,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& out) {
+    auto away = isect.shading.to_local(out);
+    auto probability = std::abs(away.z) / π;
+    auto f = glossy_reflection(material, isect.shading.to_local(towards), away);
+    return scatter_sample{
+        .value = f,
+        .direction = out,
+        .probability = probability,
+    };
+}
+
+scatter_sample scatter(const scene& scene, const intersection& isect,
+                       const vec3f& towards);
+scatter_sample scatter(const scene& scene, const intersection& isect,
+                       const vec3f& towards, const vec3f& away);
+
+scatter_sample scatter(const scene&, const mixed_material&, const intersection&,
+                       const vec3f&, const vec3f&) {
+    throw;
+}
+
+scatter_sample scatter(const scene& scene, const mixed_material& mix,
+                       const intersection& isect, const vec3f& towards) {
+    auto scattering_source = std::clamp<int>(
+        (int)(sample_1d() * mix.layers.size()), 0, mix.layers.size() - 1);
+
+    auto scattering = std::visit(
+        [&](const auto& m) { return scatter(scene, m, isect, towards); },
+        *mix.layers[scattering_source].second);
+    scattering.probability *= mix.layers[scattering_source].first;
+    scattering.value *= mix.layers[scattering_source].first;
+
+    auto away = scattering.direction;
+
+    Float total_weight{};
+    
+    for (int i{}; i < (int)mix.layers.size(); ++i) {
+        auto [weight, layer] = mix.layers[i];
+        total_weight += weight;
+
+        if (i == scattering_source)
+            continue;
+
+        auto s = std::visit(
+            [&](const auto& m) {
+                return scatter(scene, m, isect, towards, away);
+            },
+            *layer);
+
+        scattering.probability += s.probability*weight;
+        scattering.value += s.value*weight;
+    }
+
+    scattering.probability /= total_weight;
+    scattering.value /= total_weight;
+
+    return scattering;
+}
+
+scatter_sample scatter(const scene& scene, const intersection& isect,
+                       const vec3f& towards, const vec3f& away) {
+    if (isect.mat)
+        return std::visit(
+            [&](const auto& material) {
+                return scatter(scene, material, isect, towards, away);
+            },
+            *isect.mat);
+    else
+        return scatter(scene, lambertian{}, isect, towards, away);
+}
+
+scatter_sample scatter(const scene& scene, const intersection& isect,
+                       const vec3f& towards) {
+    if (isect.mat)
+        return std::visit(
+            [&](const auto& material) {
+                return scatter(scene, material, isect, towards);
+            },
+            *isect.mat);
+    else
+        return scatter(scene, lambertian{}, isect, towards);
 }
 
 bool same_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
@@ -325,8 +576,9 @@ light naive_trace(scene& scene, ray r, int depth) {
         return {scene.film.global_radiance};
 
     vec3f Le{};
-    if (intersection->mat and intersection->mat->light)
-        Le = *intersection->mat->light;
+    if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
+        Le = std::get_if<emissive>(intersection->mat)->value;
+    }
 
     if (0 == depth)
         return Le;
@@ -352,28 +604,29 @@ light path_trace(scene& scene, ray r, int depth) {
     if (not intersection)
         return {scene.film.global_radiance};
 
-    light emission{};
-    if (intersection->mat and intersection->mat->light) {
-        emission = *intersection->mat->light;
+    light emission{0};
+    if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
+        emission = std::get_if<emissive>(intersection->mat)->value;
     }
 
     if (0 == depth)
         return emission;
 
-    auto scatter = sample_scattering(scene, *intersection, r.direction * -1);
+    auto scattering = scatter(scene, *intersection, r.direction * -1);
+    auto icos = scattering.direction.dot(intersection->normal);
 
-    auto icos = scatter.direction.dot(intersection->normal);
-    auto reflectance = (scatter.value * icos) / scatter.probability;
+    if (std::isinf(scattering.probability))
+        scattering.probability = 1;
+
+    auto reflectance = (scattering.value * icos) / scattering.probability;
 
     if ((reflectance.x <= 0 and reflectance.y <= 0 and reflectance.z <= 0) or
-        not same_hemisphere(intersection->normal, scatter.direction))
+        not same_hemisphere(intersection->normal, scattering.direction))
         return emission;
 
     auto reflection_point = r.distance(intersection->distance);
-    auto scatter_ray =
-        ray{reflection_point + intersection->normal *
-                                   std::numeric_limits<Float>::epsilon() * 32,
-            scatter.direction};
+    auto scatter_ray = ray{reflection_point + intersection->normal * 0.00004,
+                           scattering.direction};
 
     auto L = path_trace(scene, scatter_ray, depth - 1);
 

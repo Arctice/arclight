@@ -1,16 +1,23 @@
 
 [film]
-resolution = [200, 200]
+resolution = [100, 100]
+depth = 3
+supersampling = 1
 
 [camera]
 type = "orthographic"
-scale = 2.0
+scale = 1
 position = [0, -10, 10]
 towards = [0, 0, 0]
 up = [0, 0, 1]
 
+[node.a]
+triangle = [[-1, -1, 0], [1, -1, 0], [0, 1, 0]]
+
 [[world]]
-triangle = [[-1, -1, 0], [1, -1, 0], [-1, 1, 0]]
-[[world]]
-triangle = [[1, -1, 0], [1, 1, 0], [-1, 1, 0]]
+transform = [["rotate-x", -0.7]]
+instance = "node.a"
+
+# [[world]]
+# triangle = [[-1, -0.764842187284, -0.64421768], [1, -0.764842187284, -0.64421768], [0, 0.7648421, 0.644217]]
 
