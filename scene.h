@@ -311,12 +311,15 @@ struct node_bvh {
     BVH bvh;
 };
 
+inline node_view make_node_view(const node& n) {
+    auto view = std::visit([](auto& s) { return node_view{s.get()}; }, n.shape);
+    view.material = n.material;
+    return view;
+}
+
 struct node_instance {
-    node_instance(transform T, const node& n) : T(T) {
-        this->n =
-            std::visit([](auto& s) { return node_view{{s.get()}}; }, n.shape);
-        this->n.material = n.material;
-    }
+    node_instance(transform T, const node_view& n) : T(T), n(n) {}
+    node_instance(transform T, const node& n) : T(T), n(make_node_view(n)) {}
     transform T;
     node_view n;
 };
@@ -325,6 +328,8 @@ std::unique_ptr<node_instance> instance(const transform& T, const node& n);
 
 enum class integrator {
     brute_force,
+    light,
+    scatter,
     path,
 };
 
@@ -341,6 +346,7 @@ struct scene {
     node root;
     camera view;
     std::vector<std::unique_ptr<material>> materials;
+    std::vector<node_instance> lights;
     std::vector<node> assets;
 };
 

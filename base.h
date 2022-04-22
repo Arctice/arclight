@@ -18,7 +18,8 @@ constexpr Float ɛ = std::numeric_limits<Float>::epsilon() * 0.5;
 constexpr Float π = 3.14159265358979323846;
 
 struct bounding_box {
-    vec3f min, max;
+    vec3f min{std::numeric_limits<Float>::max()};
+    vec3f max{std::numeric_limits<Float>::lowest()};
 
     bool intersect(const bounding_box& other) {
         return std::max(min.x, other.min.x) <= std::min(max.x, other.max.x) &&

@@ -1,7 +1,7 @@
 
 [film]
 method = "path"
-resolution = [1000, 1000]
+resolution = [600, 600]
 supersampling = 64
 global_radiance = 0.5
 
@@ -12,17 +12,17 @@ position = [0, -100, 100]
 towards = [0, 0, 0]
 up = [0, 0, 1]
 
-[model.sphere]
-file = "sphere.ply"
-[node.item]
-transform = [["scale", 0.4], ["translate", [0, -1, 1]]]
-instance = "model.sphere"
-
-# [model.bunny]
-# file = "bunny/bun_zipper_res4.ply"
+# [model.sphere]
+# file = "sphere.ply"
 # [node.item]
-# transform = [ ["scale", 6], ["rotate-x", -1.57], ["translate", [0.1, -1.4, 1]]]
-# instance = "model.bunny"
+# transform = [["scale", 0.4], ["translate", [0, -1, 1]]]
+# instance = "model.sphere"
+
+[model.bunny]
+file = "bunny/bun_zipper_res4.ply"
+[node.item]
+transform = [ ["scale", 6], ["rotate-x", -1.57], ["translate", [0.1, -1.4, 1]]]
+instance = "model.bunny"
 
 [[world]]
 triangle = [[-100, -100, 0], [100, -100, 0], [-100, 100, 0]]

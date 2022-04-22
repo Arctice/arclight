@@ -70,10 +70,18 @@ private:
 };
 
 void tev::create_rgb_image(const std::string& name, i32 width, i32 height) {
+    {
+        std::vector<char> data;
+        OStream payload{data};
+        payload << char(2);
+        payload << name;
+        pimpl->send(data);
+    }
+
     std::vector<char> data;
     OStream payload{data};
     payload << char(4);
-    payload << false; // grab focus
+    payload << true; // grab focus
     payload << name;
     payload << width << height;
     payload << 3; // channels

@@ -9,6 +9,60 @@
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
 
+std::vector<node_instance> collect_lights(const node_instance* node,
+                                          transform T = transform::identity());
+std::vector<node_instance> collect_lights(const node* node,
+                                          transform T = transform::identity());
+std::vector<node_instance> collect_lights(const node_bvh* node,
+                                          transform T = transform::identity());
+
+std::vector<node_instance> collect_lights(const triangle*, const transform&) {
+    return {};
+}
+
+std::vector<node_instance> collect_lights(const bvh_mesh*, const transform&) {
+    return {};
+}
+
+std::vector<node_instance> collect_lights(const node* node, transform T) {
+    if (node->material and std::holds_alternative<emissive>(*node->material)) {
+        std::vector<node_instance> lights;
+        lights.push_back(node_instance{T, *node});
+        return lights;
+    }
+    else
+        return std::visit([&](auto& v) { return collect_lights(v.get(), T); },
+                          node->shape);
+
+    return {};
+}
+
+std::vector<node_instance> collect_lights(const node_bvh* bvh, transform T) {
+    std::vector<node_instance> lights;
+
+    for (auto& node : bvh->nodes)
+        for (auto& light : collect_lights(&node, T)) lights.push_back(light);
+
+    return lights;
+}
+
+std::vector<node_instance> collect_lights(const node_instance* node,
+                                          transform T) {
+    T = node->T.compose(T);
+
+    if (node->n.material and
+        std::holds_alternative<emissive>(*node->n.material)) {
+        std::vector<node_instance> lights;
+        lights.push_back(node_instance{T, node->n});
+        return lights;
+    }
+    else
+        return std::visit([&](auto& v) { return collect_lights(v, T); },
+                          node->n.shape);
+
+    return {};
+}
+
 matrix_sq4 matrix_sq4::matmul(const matrix_sq4& b) const {
     matrix_sq4 c{};
     auto A = reinterpret_cast<const Float(&)[16]>(m);
@@ -272,9 +326,9 @@ camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
 }
 
 struct scatter_sample {
-    light value;
+    light value{0};
     vec3f direction;
-    Float probability;
+    Float probability{1};
 };
 
 vec3f shading_frame::to_local(vec3f v) const {
@@ -333,14 +387,9 @@ scatter_sample scatter(const scene&, const emissive&, const intersection&,
     };
 }
 
-scatter_sample scatter(const scene&, const blinn_phong&, const intersection&,
-                       const vec3f&, const vec3f&) {
-    throw;
-}
-
-scatter_sample scatter(const scene&, const blinn_phong& material,
-                       const intersection& isect, const vec3f& towards) {
-    auto away = sample_cosine_hemisphere(sample_2d());
+scatter_sample blinn_phong_forward(const blinn_phong& material,
+                                   const intersection& isect,
+                                   const vec3f& towards, const vec3f& away) {
     auto angle_cos = away.z;
     auto probability = std::abs(angle_cos) / π;
 
@@ -369,11 +418,24 @@ scatter_sample scatter(const scene&, const blinn_phong& material,
     };
 }
 
+scatter_sample scatter(const scene&, const blinn_phong& material,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& away) {
+    return blinn_phong_forward(material, isect, towards,
+                               isect.shading.to_local(away));
+}
+
+scatter_sample scatter(const scene&, const blinn_phong& material,
+                       const intersection& isect, const vec3f& towards) {
+    auto away = sample_cosine_hemisphere(sample_2d());
+    return blinn_phong_forward(material, isect, towards, away);
+}
+
 Float beckmann_microfacet_area(Float roughness, Float a) {
     auto t = std::tan(a);
     if (std::isinf(t))
         return 0;
-    auto r = roughness*roughness;
+    auto r = roughness * roughness;
     return std::exp(-(t * t) / r) / (π * r * std::pow(std::cos(a), 4));
 }
 
@@ -463,9 +525,7 @@ scatter_sample scatter(const scene&, const glossy& material,
                        const intersection& isect, const vec3f& towards) {
     auto away = sample_cosine_hemisphere(sample_2d());
     auto probability = std::abs(away.z) / π;
-
     auto f = glossy_reflection(material, isect.shading.to_local(towards), away);
-
     return scatter_sample{
         .value = f,
         .direction = isect.shading.to_world(away),
@@ -491,26 +551,23 @@ scatter_sample scatter(const scene& scene, const intersection& isect,
 scatter_sample scatter(const scene& scene, const intersection& isect,
                        const vec3f& towards, const vec3f& away);
 
-scatter_sample scatter(const scene&, const mixed_material&, const intersection&,
-                       const vec3f&, const vec3f&) {
-    throw;
-}
+scatter_sample scatter(const scene& scene, const mixed_material& mix,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& away);
 
 scatter_sample scatter(const scene& scene, const mixed_material& mix,
-                       const intersection& isect, const vec3f& towards) {
-    auto scattering_source = std::clamp<int>(
-        (int)(sample_1d() * mix.layers.size()), 0, mix.layers.size() - 1);
+                       const intersection& isect, const vec3f& towards);
+scatter_sample scatter(const scene& scene, const mixed_material& mix,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& away);
 
-    auto scattering = std::visit(
-        [&](const auto& m) { return scatter(scene, m, isect, towards); },
-        *mix.layers[scattering_source].second);
-    scattering.probability *= mix.layers[scattering_source].first;
-    scattering.value *= mix.layers[scattering_source].first;
-
-    auto away = scattering.direction;
+scatter_sample scatter(const scene& scene, const mixed_material& mix,
+                       const intersection& isect, const vec3f& towards,
+                       scatter_sample scattering,
+                       std::optional<int> scattering_source) {
+    vec3f away = scattering.direction;
 
     Float total_weight{};
-    
     for (int i{}; i < (int)mix.layers.size(); ++i) {
         auto [weight, layer] = mix.layers[i];
         total_weight += weight;
@@ -524,14 +581,36 @@ scatter_sample scatter(const scene& scene, const mixed_material& mix,
             },
             *layer);
 
-        scattering.probability += s.probability*weight;
-        scattering.value += s.value*weight;
+        scattering.probability += s.probability * weight;
+        scattering.value += s.value * weight;
     }
 
     scattering.probability /= total_weight;
     scattering.value /= total_weight;
 
     return scattering;
+}
+
+scatter_sample scatter(const scene& scene, const mixed_material& mix,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& away) {
+    return scatter(scene, mix, isect, towards, scatter_sample{{}, away, {}},
+                   {});
+}
+
+scatter_sample scatter(const scene& scene, const mixed_material& mix,
+                       const intersection& isect, const vec3f& towards) {
+
+    auto scattering_source = std::clamp<int>(
+        (int)(sample_1d() * mix.layers.size()), 0, mix.layers.size() - 1);
+
+    auto scattering = std::visit(
+        [&](const auto& m) { return scatter(scene, m, isect, towards); },
+        *mix.layers[scattering_source].second);
+    scattering.probability *= mix.layers[scattering_source].first;
+    scattering.value *= mix.layers[scattering_source].first;
+
+    return scatter(scene, mix, isect, towards, scattering, scattering_source);
 }
 
 scatter_sample scatter(const scene& scene, const intersection& isect,
@@ -560,7 +639,7 @@ scatter_sample scatter(const scene& scene, const intersection& isect,
 
 bool same_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
 
-light debug_trace(scene& scene, ray r, int) {
+light debug_trace(const scene& scene, ray r, int) {
     auto intersection = intersect(scene.root, r);
     if (not intersection)
         return {};
@@ -570,7 +649,7 @@ light debug_trace(scene& scene, ray r, int) {
     return {(norm_l + d) / 2, (norm_l + d) / 2, (norm_l + d) / 2};
 }
 
-light naive_trace(scene& scene, ray r, int depth) {
+light naive_trace(const scene& scene, ray r, int depth) {
     auto intersection = intersect(scene.root, r);
     if (not intersection)
         return {scene.film.global_radiance};
@@ -578,6 +657,7 @@ light naive_trace(scene& scene, ray r, int depth) {
     vec3f Le{};
     if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
         Le = std::get_if<emissive>(intersection->mat)->value;
+        return Le;
     }
 
     if (0 == depth)
@@ -599,7 +679,7 @@ light naive_trace(scene& scene, ray r, int depth) {
     return Li * f + Le;
 }
 
-light path_trace(scene& scene, ray r, int depth) {
+light scatter_trace(const scene& scene, ray r, int depth) {
     auto intersection = intersect(scene.root, r);
     if (not intersection)
         return {scene.film.global_radiance};
@@ -628,9 +708,173 @@ light path_trace(scene& scene, ray r, int depth) {
     auto scatter_ray = ray{reflection_point + intersection->normal * 0.00004,
                            scattering.direction};
 
-    auto L = path_trace(scene, scatter_ray, depth - 1);
+    auto L = scatter_trace(scene, scatter_ray, depth - 1);
 
     return emission + reflectance * L;
+}
+
+Float power_heuristic(Float fPdf, Float gPdf) {
+    Float f = 1 * fPdf, g = 1 * gPdf;
+    return (f * f) / (f * f + g * g);
+}
+
+std::pair<vec3f, Float> sample_sphere(const vec3f& point, const vec3f& centre,
+                                      Float radius) {
+    auto disk_normal = (point - centre).normalized();
+    auto disk_radius = radius;
+    auto disk_centre = centre + disk_normal * disk_radius;
+
+    auto t0 = vec3f{0, disk_normal.z, -disk_normal.y}.normalized();
+    // auto t0 = vec3f{-disk_normal.z, 0, disk_normal.x}.normalized();
+    // auto t0 = vec3f{-disk_normal.y, disk_normal.x, 0}.normalized();
+    auto t1 = disk_normal.cross(t0).normalized();
+
+    auto solid_angle =
+        π * disk_radius * disk_radius / (disk_centre - point).length_sq();
+
+    auto u = sample_uniform_disk(sample_2d());
+    auto light_point = disk_centre + (t0 * u.x + t1 * u.y) * disk_radius;
+
+    return {light_point, solid_angle};
+}
+
+scatter_sample sample_light(const scene& scene,
+                            const intersection& intersection,
+                            const node_instance& light, const ray& r) {
+
+    auto intersection_point = r.distance(intersection.distance);
+    auto ray_origin = intersection_point + intersection.normal * 0.00004;
+
+    auto light_bounds = node_bounds(light);
+    auto centre = light_bounds.centroid();
+    auto radius = (centre - light_bounds.max).length();
+
+    auto [light_point, solid_angle] = sample_sphere(ray_origin, centre, radius);
+
+    auto light_probability = 1 / (solid_angle * scene.lights.size());
+
+    auto light_ray = ray{
+        .origin = ray_origin,
+        .direction = (light_point - ray_origin).normalized(),
+    };
+
+    auto icos = (light_ray.direction).dot(intersection.normal);
+    if (icos < 0)
+        return {.probability = light_probability};
+
+    auto visible = intersect(light, light_ray);
+    auto occluded = intersect(scene.root, light_ray);
+    if (not visible or (occluded and occluded->distance != visible->distance))
+        return {.probability = light_probability};
+
+    auto towards = r.direction * -1;
+    auto reflected = scatter(scene, intersection, towards, light_ray.direction);
+
+    auto L = reflected.value * icos;
+    L *= std::get<emissive>(*light.n.material).value / light_probability;
+    L *= power_heuristic(light_probability, reflected.probability);
+
+    return scatter_sample{
+        .value = L,
+        .direction = light_ray.direction,
+        .probability = light_probability,
+    };
+}
+
+scatter_sample sample_direct_lighting(const scene& scene,
+                                      const intersection& intersection,
+                                      const ray& r) {
+    if (scene.lights.empty())
+        return {};
+
+    auto one_light = std::clamp<int>((int)(sample_1d() * scene.lights.size()),
+                                     0, scene.lights.size() - 1);
+
+    return sample_light(scene, intersection, scene.lights[one_light], r);
+}
+
+light light_trace(const scene& scene, ray r, int) {
+    auto intersection = intersect(scene.root, r);
+    if (not intersection)
+        return {scene.film.global_radiance};
+
+    light L{};
+
+    if (intersection->mat and std::get_if<emissive>(intersection->mat))
+        return std::get_if<emissive>(intersection->mat)->value;
+
+    auto Ld = sample_direct_lighting(scene, *intersection, r);
+    return L + Ld.value;
+}
+
+light path_trace(const scene& scene, ray r, int depth) {
+    light beta{1};
+    light L{};
+
+    ray prev_ray{r};
+    std::optional<intersection> previous_intersection;
+    Float scattering_pdf{-1};
+
+    while (true) {
+        auto intersection = intersect(scene.root, r);
+        if (not intersection) {
+            L += beta * light{scene.film.global_radiance};
+            break;
+        }
+
+        if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
+            auto Le = std::get<emissive>(*intersection->mat).value;
+            if (scattering_pdf < 0)
+                L += beta * Le;
+            else {
+                for (size_t li{}; li < scene.lights.size(); ++li) {
+                    auto d = intersect(scene.lights[li], r);
+                    if (d and d->distance == intersection->distance) {
+                        auto light_pdf =
+                            sample_light(scene, *previous_intersection,
+                                         scene.lights[li], prev_ray)
+                                .probability;
+                        Le *= power_heuristic(scattering_pdf, light_pdf);
+                        L += beta * Le;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (0 == depth--)
+            break;
+
+        auto light = sample_direct_lighting(scene, *intersection, r);
+        if (0 < light.value.length_sq()) {
+            L += beta * light.value;
+        }
+
+        auto intersection_point = r.distance(intersection->distance);
+        auto scattering = scatter(scene, *intersection, r.direction * -1);
+        if (std::isinf(scattering.probability))
+            scattering.probability = 1;
+        auto icos = scattering.direction.dot(intersection->normal);
+        auto reflected =
+            (scattering.value * std::abs(icos)) / scattering.probability;
+
+        beta *= reflected;
+
+        if (not same_hemisphere(intersection->normal, scattering.direction) or
+            (beta.x <= 0 and beta.y <= 0 and beta.z <= 0))
+            break;
+
+        auto scatter_ray =
+            ray{intersection_point + intersection->normal * 0.00004,
+                scattering.direction};
+        scattering_pdf = scattering.probability;
+        previous_intersection = intersection;
+
+        prev_ray = r;
+        r = scatter_ray;
+    }
+
+    return L;
 }
 
 Float gamma_correct(Float value) {
@@ -671,11 +915,16 @@ int main(int argc, char** argv) {
     auto resolution = scene.film.resolution;
     fmt::print("loaded {}\n", *scene_path);
 
+    scene.lights = collect_lights(&scene.root);
+    fmt::print("{} lights\n", scene.lights.size());
+
     auto trace = [&scene, debug]() {
         if (debug)
             return debug_trace;
         switch (scene.film.method) {
         case integrator::path: return path_trace;
+        case integrator::light: return light_trace;
+        case integrator::scatter: return scatter_trace;
         case integrator::brute_force: return naive_trace;
         }
     }();
@@ -742,9 +991,11 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
+// specular brdf sampling
 // multithreaded deterministic rng
-// glossy brdf
-// light sampling
-// comparison tests
+// two-sided triangles
+// fireflies in specular test scene
 // adaptive sampling, convergence metering
 // perspective camera
+// interactive preview
+// comparison tests

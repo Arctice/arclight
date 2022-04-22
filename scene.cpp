@@ -169,6 +169,10 @@ scene load_scene(std::string path) {
     auto method = config["film"]["method"].value_or<std::string>("path");
     if (method == "path")
         scene_film.method = integrator::path;
+    else if (method == "scatter")
+        scene_film.method = integrator::scatter;
+    else if (method == "light")
+        scene_film.method = integrator::light;
     else if (method == "brute_force")
         scene_film.method = integrator::brute_force;
     else
