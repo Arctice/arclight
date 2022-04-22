@@ -5,9 +5,13 @@
 
 #include <array>
 #include <queue>
+#include <chrono>
 
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
+
+bool same_normal_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
+bool same_shading_hemisphere(vec3f a, vec3f b) { return 0 < a.z * b.z; }
 
 std::vector<node_instance> collect_lights(const node_instance* node,
                                           transform T = transform::identity());
@@ -328,7 +332,7 @@ camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
 struct scatter_sample {
     light value{0};
     vec3f direction;
-    Float probability{1};
+    Float probability{};
 };
 
 vec3f shading_frame::to_local(vec3f v) const {
@@ -359,8 +363,12 @@ scatter_sample scatter(const scene&, const lambertian& matte,
 }
 
 scatter_sample scatter(const scene&, const lambertian& matte,
-                       const intersection& isect, const vec3f&,
+                       const intersection& isect, const vec3f& towards,
                        const vec3f& away) {
+    if (not same_shading_hemisphere(isect.shading.to_local(towards),
+                                    isect.shading.to_local(away)))
+        return {};
+
     auto angle_cos = isect.shading.to_local(away).z;
     return scatter_sample{
         .value = matte.reflectance / π,
@@ -431,27 +439,6 @@ scatter_sample scatter(const scene&, const blinn_phong& material,
     return blinn_phong_forward(material, isect, towards, away);
 }
 
-Float beckmann_microfacet_area(Float roughness, Float a) {
-    auto t = std::tan(a);
-    if (std::isinf(t))
-        return 0;
-    auto r = roughness * roughness;
-    return std::exp(-(t * t) / r) / (π * r * std::pow(std::cos(a), 4));
-}
-
-Float beckmann_microfacet_lambda(Float roughness, Float t) {
-    auto a = 1 / (roughness * std::abs(std::tan(t)));
-    if ((Float)1.6 <= a)
-        return 0;
-    return 0.5 * (std::erf(a) - 1 + std::exp(-a * a) / (a * std::sqrt(π)));
-}
-
-Float beckmann_microfacet_geometry(Float roughness, Float a, Float b) {
-    auto A = 1 / (1 + beckmann_microfacet_lambda(roughness, a));
-    auto B = 1 / (1 + beckmann_microfacet_lambda(roughness, b));
-    return 1 / (1 + A + B);
-}
-
 auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
     light Eta = etat / etai;
     light Etak = k / etai;
@@ -482,11 +469,11 @@ auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
 
 scatter_sample scatter(const scene&, const specular& material,
                        const intersection& isect, const vec3f& towards) {
-    auto to = isect.shading.to_local(towards);
-    auto away = (to * -1 + vec3f{0, 0, 2 * std::abs(to.z)});
+    auto in = isect.shading.to_local(towards);
+    auto away = in * -1 + vec3f{0, 0, 2 * std::abs(in.z)};
 
     auto reflectance = fresnel_conductor(
-        std::abs(to.z), {1}, material.refraction, material.absorption);
+        std::abs(in.z), {1}, material.refraction, material.absorption);
 
     return scatter_sample{
         .value = reflectance,
@@ -504,6 +491,82 @@ scatter_sample scatter(const scene&, const specular&, const intersection&,
     };
 }
 
+Float ggx_microfacet_area(Float roughness, Float a) {
+    auto t = std::tan(a);
+    auto t2 = t * t;
+    if (std::isinf(t2))
+        return 0;
+    auto a2 = roughness * roughness;
+    return a2 / (π * std::pow(std::cos(a), 4) * std::pow(a2 + t2, 2));
+}
+
+Float ggx_microfacet_G1(Float roughness, Float a) {
+    auto t = std::tan(a);
+    if (std::isinf(t))
+        return 0;
+    auto t2 = t * t;
+    auto a2 = roughness * roughness;
+    auto D = std::sqrt(std::max((Float)0, (1 + a2 * t2)));
+    return 2 / (1 + D);
+}
+
+Float ggx_microfacet_lambda(Float roughness, Float a) {
+    return (1 / ggx_microfacet_G1(roughness, a)) - 1;
+}
+
+Float ggx_microfacet_geometry(Float roughness, Float a, Float b) {
+    auto A = ggx_microfacet_lambda(roughness, a);
+    auto B = ggx_microfacet_lambda(roughness, b);
+    return 1 / (1 + A + B);
+}
+
+// heitz 2018
+vec3f ggx_sample(Float alpha, vec3f v) {
+    auto vh = vec3f{alpha * v.x, alpha * v.y, v.z}.normalized();
+    if (vh.z < 0)
+        vh.z *= -1;
+
+    auto T1 = vh.z < (Float)0.99999 ? vec3f{0, 0, 1}.cross(vh).normalized()
+                                    : vec3f{1, 0, 0};
+    auto T2 = vh.cross(T1);
+
+    auto [t1, t2] = sample_uniform_disk(sample_2d());
+    auto s = (1 + vh.z) / 2;
+    auto h = std::sqrt(1 - t1 * t1);
+    t2 = (1 - s) * h + s * t2;
+
+    auto Nh = T1 * t1 + T2 * t2 +
+              vh * std::sqrt(std::max<Float>(0, 1 - t1 * t1 - t2 * t2));
+    auto Ne = vec3f{alpha * Nh.x, alpha * Nh.y, std::max<Float>(ɛ, Nh.z)};
+    return Ne.normalized();
+}
+
+Float ggx_sample_pdf(Float alpha, vec3f n, vec3f v) {
+    return ggx_microfacet_G1(alpha, std::acos(v.z)) / std::abs(v.z) *
+           ggx_microfacet_area(alpha, std::acos(n.z)) * std::abs(v.dot(n));
+}
+
+Float beckmann_microfacet_area(Float roughness, Float a) {
+    auto t = std::tan(a);
+    if (std::isinf(t))
+        return 0;
+    auto r = roughness * roughness;
+    return std::exp(-(t * t) / r) / (π * r * std::pow(std::cos(a), 4));
+}
+
+Float beckmann_microfacet_lambda(Float roughness, Float t) {
+    auto a = 1 / (roughness * std::abs(std::tan(t)));
+    if ((Float)1.6 <= a)
+        return 0;
+    return 0.5 * (std::erf(a) - 1 + std::exp(-a * a) / (a * std::sqrt(π)));
+}
+
+Float beckmann_microfacet_geometry(Float roughness, Float a, Float b) {
+    auto A = 1 / (1 + beckmann_microfacet_lambda(roughness, a));
+    auto B = 1 / (1 + beckmann_microfacet_lambda(roughness, b));
+    return 1 / (1 + A + B);
+}
+
 light glossy_reflection(const glossy& material, const vec3f& towards,
                         const vec3f& away) {
     auto halfv = (away + towards).normalized();
@@ -511,21 +574,35 @@ light glossy_reflection(const glossy& material, const vec3f& towards,
     auto b = std::acos(towards.z);
     auto h = std::acos(halfv.z);
 
-    auto F = fresnel_conductor(std::abs(away.dot(towards)), {1},
+    auto F = fresnel_conductor(std::abs(towards.dot(halfv)), {1},
                                material.refraction, material.absorption);
 
-    auto D = beckmann_microfacet_area(material.roughness, h);
-    auto G = beckmann_microfacet_geometry(material.roughness, a, b);
+    auto D = ggx_microfacet_area(material.roughness, h);
+    auto G = ggx_microfacet_geometry(material.roughness, a, b);
 
-    auto f = F * D * G / (4 * std::abs(away.z) * std::abs(towards.z));
-    return f;
+    // auto D = beckmann_microfacet_area(material.roughness, h);
+    // auto G = beckmann_microfacet_geometry(material.roughness, a, b);
+
+    return F * D * G / (4 * std::abs(away.z) * std::abs(towards.z));
 }
 
 scatter_sample scatter(const scene&, const glossy& material,
                        const intersection& isect, const vec3f& towards) {
-    auto away = sample_cosine_hemisphere(sample_2d());
-    auto probability = std::abs(away.z) / π;
-    auto f = glossy_reflection(material, isect.shading.to_local(towards), away);
+    // auto away = sample_cosine_hemisphere(sample_2d());
+    // auto angle_cos = away.z;
+    // auto probability = std::abs(angle_cos) / π;
+
+    auto in = isect.shading.to_local(towards).normalized();
+    auto facet = ggx_sample(material.roughness, in);
+    auto away = (in * -1) + facet * 2 * in.dot(facet);
+
+    if (not same_shading_hemisphere(in, away))
+        return {};
+
+    auto f = glossy_reflection(material, in, away);
+    auto probability = ggx_sample_pdf(material.roughness, facet, in) /
+                       (4 * std::abs(in.dot(facet)));
+
     return scatter_sample{
         .value = f,
         .direction = isect.shading.to_world(away),
@@ -536,9 +613,14 @@ scatter_sample scatter(const scene&, const glossy& material,
 scatter_sample scatter(const scene&, const glossy& material,
                        const intersection& isect, const vec3f& towards,
                        const vec3f& out) {
-    auto away = isect.shading.to_local(out);
-    auto probability = std::abs(away.z) / π;
-    auto f = glossy_reflection(material, isect.shading.to_local(towards), away);
+    auto away = isect.shading.to_local(out).normalized();
+    auto in = isect.shading.to_local(towards).normalized();
+    auto facet = (away + in).normalized();
+    auto probability = ggx_sample_pdf(material.roughness, facet, in) /
+                       (4 * std::abs(in.dot(facet)));
+    auto f = same_shading_hemisphere(in, away)
+                 ? glossy_reflection(material, in, away)
+                 : 0;
     return scatter_sample{
         .value = f,
         .direction = out,
@@ -637,8 +719,6 @@ scatter_sample scatter(const scene& scene, const intersection& isect,
         return scatter(scene, lambertian{}, isect, towards);
 }
 
-bool same_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
-
 light debug_trace(const scene& scene, ray r, int) {
     auto intersection = intersect(scene.root, r);
     if (not intersection)
@@ -649,34 +729,37 @@ light debug_trace(const scene& scene, ray r, int) {
     return {(norm_l + d) / 2, (norm_l + d) / 2, (norm_l + d) / 2};
 }
 
+vec3f offset_origin(const vec3f& point, const intersection& isect) {
+    return point + isect.normal * 0.00004;
+}
+
 light naive_trace(const scene& scene, ray r, int depth) {
     auto intersection = intersect(scene.root, r);
     if (not intersection)
         return {scene.film.global_radiance};
 
-    vec3f Le{};
-    if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
-        Le = std::get_if<emissive>(intersection->mat)->value;
-        return Le;
-    }
+    if (intersection->mat and std::get_if<emissive>(intersection->mat))
+        return std::get_if<emissive>(intersection->mat)->value;
 
     if (0 == depth)
-        return Le;
+        return {};
 
     auto inorm = intersection->normal;
     auto scatter_d = sample_uniform_direction(sample_2d()).normalized();
     auto icos = std::abs(inorm.dot(scatter_d));
-    auto pdf = 1 / (2 * π);
-    auto f = (icos / π) / pdf;
+    auto pdf = 1 / (4 * π);
+    auto f = scatter(scene, *intersection, r.direction * -1, scatter_d).value *
+             icos / pdf;
 
-    if (f <= 0 or not same_hemisphere(inorm, scatter_d))
-        return Le;
+    if (f.length_sq() <= 0 or not same_normal_hemisphere(inorm, scatter_d))
+        return {};
 
     auto reflection_point = r.distance(intersection->distance);
-    auto scatter_ray = ray{reflection_point + inorm * 0.00001, scatter_d};
+    auto scatter_ray =
+        ray{offset_origin(reflection_point, *intersection), scatter_d};
 
     auto Li = naive_trace(scene, scatter_ray, depth - 1);
-    return Li * f + Le;
+    return Li * f;
 }
 
 light scatter_trace(const scene& scene, ray r, int depth) {
@@ -701,11 +784,11 @@ light scatter_trace(const scene& scene, ray r, int depth) {
     auto reflectance = (scattering.value * icos) / scattering.probability;
 
     if ((reflectance.x <= 0 and reflectance.y <= 0 and reflectance.z <= 0) or
-        not same_hemisphere(intersection->normal, scattering.direction))
+        not same_normal_hemisphere(intersection->normal, scattering.direction))
         return emission;
 
     auto reflection_point = r.distance(intersection->distance);
-    auto scatter_ray = ray{reflection_point + intersection->normal * 0.00004,
+    auto scatter_ray = ray{offset_origin(reflection_point, *intersection),
                            scattering.direction};
 
     auto L = scatter_trace(scene, scatter_ray, depth - 1);
@@ -713,12 +796,9 @@ light scatter_trace(const scene& scene, ray r, int depth) {
     return emission + reflectance * L;
 }
 
-Float power_heuristic(Float fPdf, Float gPdf) {
-    Float f = 1 * fPdf, g = 1 * gPdf;
-    return (f * f) / (f * f + g * g);
-}
+Float power_heuristic(Float f, Float g) { return (f * f) / (f * f + g * g); }
 
-std::pair<vec3f, Float> sample_sphere(const vec3f& point, const vec3f& centre,
+std::pair<vec3f, Float> sample_sphere(vec3f point, const vec3f& centre,
                                       Float radius) {
     auto disk_normal = (point - centre).normalized();
     auto disk_radius = radius;
@@ -729,33 +809,32 @@ std::pair<vec3f, Float> sample_sphere(const vec3f& point, const vec3f& centre,
     // auto t0 = vec3f{-disk_normal.y, disk_normal.x, 0}.normalized();
     auto t1 = disk_normal.cross(t0).normalized();
 
-    auto solid_angle =
-        π * disk_radius * disk_radius / (disk_centre - point).length_sq();
-
-    auto u = sample_uniform_disk(sample_2d());
-    auto light_point = disk_centre + (t0 * u.x + t1 * u.y) * disk_radius;
-
-    return {light_point, solid_angle};
+    auto cone_cos = (disk_centre - point).length() /
+                    (disk_centre + t0 * disk_radius - point).length();
+    auto direction =
+        sample_uniform_cone(cone_cos, t0, t1, disk_normal * -1).normalized();
+    auto probability = pdf_uniform_cone(cone_cos);
+    return {direction, probability};
 }
 
 scatter_sample sample_light(const scene& scene,
                             const intersection& intersection,
                             const node_instance& light, const ray& r) {
-
     auto intersection_point = r.distance(intersection.distance);
-    auto ray_origin = intersection_point + intersection.normal * 0.00004;
+    auto ray_origin = offset_origin(intersection_point, intersection);
 
     auto light_bounds = node_bounds(light);
     auto centre = light_bounds.centroid();
     auto radius = (centre - light_bounds.max).length();
 
-    auto [light_point, solid_angle] = sample_sphere(ray_origin, centre, radius);
+    auto [light_direction, light_sample_pdf] =
+        sample_sphere(ray_origin, centre, radius);
 
-    auto light_probability = 1 / (solid_angle * scene.lights.size());
+    auto light_probability = 1 / (light_sample_pdf * scene.lights.size());
 
     auto light_ray = ray{
         .origin = ray_origin,
-        .direction = (light_point - ray_origin).normalized(),
+        .direction = light_direction,
     };
 
     auto icos = (light_ray.direction).dot(intersection.normal);
@@ -860,13 +939,13 @@ light path_trace(const scene& scene, ray r, int depth) {
 
         beta *= reflected;
 
-        if (not same_hemisphere(intersection->normal, scattering.direction) or
+        if (not same_normal_hemisphere(intersection->normal,
+                                       scattering.direction) or
             (beta.x <= 0 and beta.y <= 0 and beta.z <= 0))
             break;
 
-        auto scatter_ray =
-            ray{intersection_point + intersection->normal * 0.00004,
-                scattering.direction};
+        auto scatter_ray = ray{offset_origin(intersection_point, *intersection),
+                               scattering.direction};
         scattering_pdf = scattering.probability;
         previous_intersection = intersection;
 
@@ -935,10 +1014,15 @@ int main(int argc, char** argv) {
     image.resize(3 * resolution.y * resolution.x);
 
     auto tev = std::optional<ipc::tev>{};
+    auto ipc_name =
+        *scene_path +
+        fmt::format(
+            "-{}", std::chrono::system_clock::now().time_since_epoch().count() %
+                       (1 << 16));
     if (arg_present("--tev")) {
         try {
             tev.emplace();
-            tev->create_rgb_image(*scene_path, resolution.x, resolution.y);
+            tev->create_rgb_image(ipc_name, resolution.x, resolution.y);
         }
         catch (std::exception& err) {
             fmt::print("tev connection failed, image output only\n");
@@ -966,7 +1050,7 @@ int main(int argc, char** argv) {
         }
 
         if (tev)
-            tev->update_rgb_image(*scene_path, 0, 0, resolution.x, resolution.y,
+            tev->update_rgb_image(ipc_name, 0, 0, resolution.x, resolution.y,
                                   image);
     }
 
@@ -991,7 +1075,6 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
-// specular brdf sampling
 // multithreaded deterministic rng
 // two-sided triangles
 // fireflies in specular test scene
@@ -999,3 +1082,5 @@ int main(int argc, char** argv) {
 // perspective camera
 // interactive preview
 // comparison tests
+// check background radiance with in path tracing
+// naive trace broke

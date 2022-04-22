@@ -208,3 +208,15 @@ vec3f sample_cosine_hemisphere(vec2f u) {
     auto z = std::sqrt(std::max<Float>(0, 1 - disk.length_sq()));
     return {disk.x, disk.y, z};
 }
+
+Float lerp(Float t, Float a, Float b) { return (1 - t) * a + t * b; }
+vec3f sample_uniform_cone(Float cos_a, const vec3f& x, const vec3f& y,
+                          const vec3f& z) {
+    auto u = sample_2d();
+    cos_a = lerp(u.x, cos_a, 1.f);
+    Float sin_a = std::sqrt((Float)1. - cos_a * cos_a);
+    Float phi = u.y * 2 * π;
+    return x * std::cos(phi) * sin_a + y * std::sin(phi) * sin_a + z * cos_a;
+}
+
+Float pdf_uniform_cone(Float a) { return (2 * π * (1 - a)); }
