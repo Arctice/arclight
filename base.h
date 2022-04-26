@@ -47,17 +47,37 @@ struct bounding_box {
 
 struct triangle {
     vec3f A, B, C;
+    vec3f nA{}, nB{}, nC{};
+    vec2f tA{0, 0}, tB{1, 0}, tC{0, 1};
 };
 
 struct indexed_mesh {
     std::vector<vec3f> vertices;
+    std::vector<vec3f> normals;
+    std::vector<vec2f> tex_coords;
     std::vector<vec3<int>> triangles;
 
     triangle reify(int n) const {
         auto [a, b, c] = triangles[n];
-        return triangle{vertices[a], vertices[b], vertices[c]};
+
+        triangle T = {
+            vertices[a], vertices[b], vertices[c],
+        };
+
+        if (not normals.empty()) {
+            T.nA = normals[a];
+            T.nB = normals[b];
+            T.nC = normals[c];
+        }
+
+        if (not tex_coords.empty()) {
+            T.tA = tex_coords[a];
+            T.tB = tex_coords[b];
+            T.tC = tex_coords[c];
+        }
+
+        return T;
     }
 };
 
 indexed_mesh load_ply(std::string path, bool describe = false);
-

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <typeinfo>
 #include <filesystem>
+#include <forward_list>
 
 template <class T, class N> auto parse_vec2(const toml::node_view<N>& v) {
     return vec2<T>{*v[0].template value<T>(), *v[1].template value<T>()};
@@ -12,6 +13,14 @@ template <class T, class N> auto parse_vec3(const toml::node_view<N>& v) {
     return vec3<T>{*v[0].template value<T>(), *v[1].template value<T>(),
                    *v[2].template value<T>()};
 }
+
+struct scene_load_context {
+    std::filesystem::path scene_root;
+    std::unordered_map<std::string, node> nodes;
+    std::unordered_map<std::string, std::unique_ptr<material>> materials;
+    std::unordered_map<std::string, texture> textures;
+    std::unordered_map<std::string, sf::Image> images;
+};
 
 transform parse_transform(const toml::array& ts) {
     auto T = transform::identity();
@@ -40,53 +49,82 @@ transform parse_transform(const toml::array& ts) {
     return T;
 }
 
-material* parse_material(
-    std::unordered_map<std::string, std::unique_ptr<material>>& materials,
-    const toml::table& material_table, const std::string& name,
-    const toml::table& nt) {
+void parse_texture_definition(scene_load_context& context,
+                              const std::string& name, const toml::table& v) {
+    auto type = *v["type"].template value<std::string>();
 
-    if(materials.contains(name))
-        return materials.at(name).get();
+    if (type == "image") {
+        auto file = **v["file"].as_string();
+        context.images[name].loadFromFile(context.scene_root /
+                                          std::filesystem::path{file});
+        context.textures[name] = image_texture{&context.images[name]};
+    }
+    else if (type == "uv") {
+        context.textures[name] = uv_texture{};
+    }
+    else if (type == "checkerboard") {
+        context.textures[name] = checkerboard_texture{};
+    }
+    else {
+        throw std::runtime_error(fmt::format("bad texture type {}", type));
+    }
+}
 
+template <class N> texture parse_texture(scene_load_context& context,
+                                         const toml::node_view<N>& v) {
+    if (v.is_string()) {
+        try {
+            return context.textures.at(**v.as_string());
+        }
+        catch (const std::out_of_range&) {
+            throw std::runtime_error(
+                fmt::format("missing texture {}", **v.as_string()));
+        }
+    }
+    else if (v.is_array())
+        return parse_vec3<Float>(v);
+    else
+        return *v.template value<Float>();
+}
+
+material* parse_material(scene_load_context& context,
+                         const toml::table& material_table,
+                         const std::string& name, const toml::table& nt) {
+
+    if (context.materials.contains(name))
+        return context.materials.at(name).get();
 
     auto type = *nt["type"].value<std::string>();
 
     if (type == "lambertian") {
-        materials[name] = std::make_unique<material>(
-            lambertian{.reflectance = parse_vec3<Float>(nt["reflectance"])});
+        context.materials[name] = std::make_unique<material>(lambertian{
+            .reflectance = parse_texture(context, nt["reflectance"])});
     }
 
     else if (type == "specular") {
-        auto eta = parse_vec3<Float>(nt["refraction"]);
-        auto k = parse_vec3<Float>(nt["absorption"]);
-        materials[name] = std::make_unique<material>(specular{
-            .refraction = eta,
-            .absorption = k,
-        });
+        context.materials[name] = std::make_unique<material>(specular{});
     }
 
     else if (type == "glossy") {
-        auto r = *nt["roughness"].value<Float>();
-        auto eta = parse_vec3<Float>(nt["refraction"]);
-        auto k = parse_vec3<Float>(nt["absorption"]);
-        materials[name] = std::make_unique<material>(glossy{
-            .roughness = r,
-            .refraction = eta,
-            .absorption = k,
+        context.materials[name] = std::make_unique<material>(glossy{
+            .roughness = parse_texture(context, nt["roughness"]),
+            .refraction = parse_texture(context, nt["refraction"]),
+            .absorption = parse_texture(context, nt["absorption"]),
         });
     }
 
     else if (type == "blinn-phong") {
-        materials[name] = std::make_unique<material>(blinn_phong{
+        context.materials[name] = std::make_unique<material>(blinn_phong{
             .sharpness = *nt["sharpness"].value<Float>(),
             .diffuse = *nt["diffuse"].value<Float>(),
-            .diffuse_color = parse_vec3<Float>(nt["diffuse_color"]),
-            .specular_color = parse_vec3<Float>(nt["specular_color"])});
+            .diffuse_color = parse_texture(context, nt["diffuse_color"]),
+            .specular_color = parse_texture(context, nt["specular_color"]),
+        });
     }
 
     else if (type == "emissive") {
-        materials[name] = std::make_unique<material>(
-            emissive{.value = parse_vec3<Float>(nt["light"])});
+        context.materials[name] = std::make_unique<material>(
+            emissive{.value = parse_texture(context, nt["light"])});
     }
 
     else if (type == "mix") {
@@ -98,30 +136,28 @@ material* parse_material(
             auto name = layer[0].value<std::string>();
             auto weight = *toml::node_view(layer[1]).value<Float>();
 
-            if (not materials.contains(*name))
-                parse_material(materials, material_table, *name,
+            if (not context.materials.contains(*name))
+                parse_material(context, material_table, *name,
                                *material_table[*name].as_table());
 
-            mix.layers.push_back({weight, materials.at(*name).get()});
+            mix.layers.push_back({weight, context.materials.at(*name).get()});
         }
 
-        materials[name] = std::make_unique<material>(std::move(mix));
+        context.materials[name] = std::make_unique<material>(std::move(mix));
     }
 
     else
         throw std::runtime_error(fmt::format("bad material type {}", type));
 
-    return materials.at(name).get();
+    return context.materials.at(name).get();
 }
 
-node parse_node(
-    const std::unordered_map<std::string, node>& nodes,
-    const std::unordered_map<std::string, std::unique_ptr<material>>& mats,
-    const toml::table& nt) {
+node parse_node(const scene_load_context& context, const toml::table& nt) {
 
     material* material{};
-    if (nt.contains("material")){
-        material = mats.at(*nt["material"].value<std::string>()).get();
+    if (nt.contains("material")) {
+        material =
+            context.materials.at(*nt["material"].value<std::string>()).get();
     }
 
     if (nt.contains("group")) {
@@ -129,7 +165,7 @@ node parse_node(
 
         for (auto& [k, v] : nt) {
             if (v.is_table()) {
-                group->nodes.push_back(parse_node(nodes, mats, *v.as_table()));
+                group->nodes.push_back(parse_node(context, *v.as_table()));
             }
         }
 
@@ -145,7 +181,7 @@ node parse_node(
         if (nt.contains("transform") and nt["transform"].is_array())
             transform = parse_transform(*nt.at("transform").as_array());
         auto instance_of = *nt["instance"].value<std::string>();
-        return {instance(transform, nodes.at(instance_of)), material};
+        return {instance(transform, context.nodes.at(instance_of)), material};
     }
 
     else if (nt.contains("triangle")) {
@@ -161,27 +197,29 @@ node parse_node(
 }
 
 scene load_scene(std::string path) {
-    auto scene_root = std::filesystem::path{path}.remove_filename();
+    scene_load_context context;
+    context.scene_root = std::filesystem::path{path}.remove_filename();
 
     auto config = toml::parse_file(path);
 
-    film scene_film{};
+    film film{};
     auto method = config["film"]["method"].value_or<std::string>("path");
     if (method == "path")
-        scene_film.method = integrator::path;
+        film.method = integrator::path;
     else if (method == "scatter")
-        scene_film.method = integrator::scatter;
+        film.method = integrator::scatter;
     else if (method == "light")
-        scene_film.method = integrator::light;
+        film.method = integrator::light;
     else if (method == "brute_force")
-        scene_film.method = integrator::brute_force;
+        film.method = integrator::brute_force;
     else
-        throw std::runtime_error(fmt::format("bad integration method {}", method));
+        throw std::runtime_error(
+            fmt::format("bad integration method {}", method));
 
-    scene_film.resolution = parse_vec2<int>(config["film"]["resolution"]);
-    scene_film.supersampling = config["film"]["supersampling"].value_or(8);
-    scene_film.depth = config["film"]["depth"].value_or(6);
-    scene_film.global_radiance = config["film"]["global_radiance"].value_or<Float>(1);
+    film.resolution = parse_vec2<int>(config["film"]["resolution"]);
+    film.supersampling = config["film"]["supersampling"].value_or(8);
+    film.depth = config["film"]["depth"].value_or(6);
+    film.global_radiance = config["film"]["global_radiance"].value_or<Float>(1);
 
     auto cam_config = config["camera"];
     auto cam_type = *cam_config["type"].value_exact<std::string>();
@@ -190,10 +228,11 @@ scene load_scene(std::string path) {
     auto cam_towards = parse_vec3<Float>(cam_config["towards"]);
     auto cam_up = parse_vec3<Float>(cam_config["up"]);
 
-    auto view = orthographic_camera(vec2f{scene_film.resolution}, cam_scale,
-                                    cam_pos, cam_towards, cam_up);
+    auto view = orthographic_camera(vec2f{film.resolution}, cam_scale, cam_pos,
+                                    cam_towards, cam_up);
 
-    std::unordered_map<std::string, node> nodes;
+    auto& nodes = context.nodes;
+    auto& materials = context.materials;
 
     auto model_table = config["model"].as_table();
     if (model_table)
@@ -206,20 +245,27 @@ scene load_scene(std::string path) {
             if (not path)
                 continue;
 
-            auto full_path = scene_root.c_str() + *path;
+            auto full_path = context.scene_root.c_str() + *path;
             auto m = load_model(full_path);
             nodes["model." + std::string(k.data())] = node{std::move(m)};
         }
 
-    std::unordered_map<std::string, std::unique_ptr<material>> materials;
+    auto texture_table = config["texture"].as_table();
+    if (texture_table)
+        for (auto [name, v] : *texture_table) {
+            auto vt = v.as_table();
+            if (not vt)
+                continue;
+            parse_texture_definition(context, name.data(), *vt);
+        }
+
     auto material_table = config["material"].as_table();
     if (material_table)
         for (auto [name, v] : *material_table) {
             auto vt = v.as_table();
             if (not vt)
                 continue;
-
-            parse_material(materials, *material_table, name.data(), *vt);
+            parse_material(context, *material_table, name.data(), *vt);
         }
 
     auto node_table = config["node"].as_table();
@@ -230,15 +276,14 @@ scene load_scene(std::string path) {
                 continue;
 
             auto name = "node." + std::string(k.data());
-            nodes[name] = parse_node(nodes, materials, *vt);
+            nodes[name] = parse_node(context, *vt);
         }
 
     auto root = std::make_unique<node_bvh>();
 
     auto world = *config["world"].as_array();
-    for (auto& x : world) {
-        root->nodes.push_back(parse_node(nodes, materials, *x.as_table()));
-    }
+    for (auto& x : world)
+        root->nodes.push_back(parse_node(context, *x.as_table()));
 
     fmt::print("world bvh... \n");
     root->bvh = build_bvh(root->nodes.size(), [&root](size_t n) {
@@ -246,16 +291,17 @@ scene load_scene(std::string path) {
     });
 
     std::vector<node> assets;
-    for (auto& [name, node] : nodes) assets.push_back(std::move(node));
+    for (auto& [name, node] : context.nodes) assets.push_back(std::move(node));
 
     std::vector<std::unique_ptr<material>> mats_vec;
     for (auto& [name, mat] : materials) mats_vec.push_back(std::move(mat));
 
     return scene{
-        .film = scene_film,
+        .film = film,
         .root = node{std::move(root)},
         .view = camera{view},
         .materials = std::move(mats_vec),
         .assets = std::move(assets),
+        .images = std::move(context.images),
     };
 }

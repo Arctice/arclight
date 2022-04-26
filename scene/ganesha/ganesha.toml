@@ -1,0 +1,42 @@
+
+[film]
+method = "path"
+resolution = [800, 800]
+supersampling = 64
+global_radiance = 0
+
+[camera]
+type = "orthographic"
+scale = 0.65
+position = [20, 10, 20]
+towards = [1.5, -1.01, -2.02]
+up = [0, 1, 0]
+
+[model.ganesha]
+file = "ganesha.ply"
+[texture.paint]
+type = "image"
+file = "ganesha.png"
+[material.paint]
+type = "lambertian"
+reflectance = "paint"
+
+[[world]]
+material = "paint"
+transform = [["scale", 0.01]]
+instance = "model.ganesha"
+
+[material.light]
+type = "emissive"
+light = [8, 8, 8]
+[node.overcast]
+material = "light"
+triangle = [[-1, 0, -1], [1, 0, -1], [-1, 0, 1]]
+[[world]]
+instance = "node.overcast"
+transform = [["translate", [1.4, 1.1, 1.6]], ["scale", 4]]
+
+[[world]]
+triangle = [[-10, -0.41, -10], [-10, -0.41, 10], [10, -0.41, -10]]
+[[world]]
+triangle = [[10, -0.41, -10], [-10, -0.41, 10], [10, -0.41, 10]]

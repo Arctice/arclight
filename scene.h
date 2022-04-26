@@ -2,33 +2,43 @@
 #include "base.h"
 #include <variant>
 #include <numeric>
+#include <SFML/Graphics.hpp>
 
 using light = vec3f;
 
+struct uv_texture {};
+struct checkerboard_texture {};
+struct image_texture{
+    sf::Image* img;
+};
+
+using texture =
+    std::variant<Float, light, uv_texture, checkerboard_texture, image_texture>;
+
 struct emissive {
-    light value{1.};
+    texture value{light{1}};
 };
 
 struct lambertian {
-    light reflectance{0.5};
+    texture reflectance{light{0.5}};
 };
 
 struct specular {
-    light refraction;
-    light absorption;
+    texture refraction;
+    texture absorption;
 };
 
 struct glossy {
-    Float roughness;
-    light refraction;
-    light absorption;
+    texture roughness;
+    texture refraction;
+    texture absorption;
 };
 
 struct blinn_phong {
     Float sharpness;
     Float diffuse;
-    light diffuse_color;
-    light specular_color;
+    texture diffuse_color;
+    texture specular_color;
 };
 
 struct mixed_material;
@@ -57,6 +67,7 @@ struct shading_frame {
 struct intersection {
     Float distance;
     vec3f normal;
+    vec2f uv;
     shading_frame shading;
     material* mat{};
 };
@@ -348,6 +359,7 @@ struct scene {
     std::vector<std::unique_ptr<material>> materials;
     std::vector<node_instance> lights;
     std::vector<node> assets;
+    std::unordered_map<std::string, sf::Image> images;
 };
 
 std::unique_ptr<bvh_mesh> load_model(std::string path);

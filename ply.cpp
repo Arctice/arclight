@@ -18,10 +18,24 @@ indexed_mesh load_ply(std::string path, bool describe) {
         auto comments = ply.get_comments();
         auto info = ply.get_info();
 
-        auto vertices =
+        std::shared_ptr<ply::PlyData> vertices, normals, tex_coords, faces;
+
+        vertices =
             ply.request_properties_from_element("vertex", {"x", "y", "z"});
-        auto faces =
-            ply.request_properties_from_element("face", {"vertex_indices"}, 3);
+
+        try {
+            normals = ply.request_properties_from_element("vertex",
+                                                          {"nx", "ny", "nz"});
+        }
+        catch (const std::exception & e) {}
+
+        try {
+            tex_coords =
+                ply.request_properties_from_element("vertex", {"u", "v"});
+        }
+        catch (const std::exception & e) {}
+
+        faces = ply.request_properties_from_element("face", {"vertex_indices"});
 
         ply.read(stream);
 
@@ -38,12 +52,20 @@ indexed_mesh load_ply(std::string path, bool describe) {
             }
             if (vertices)
                 fmt::print("vertices: {}\n", vertices->count);
+            if (normals)
+                fmt::print("normals: {}\n", normals->count);
+            if (tex_coords)
+                fmt::print("tex_coords: {}\n", tex_coords->count);
             if (faces)
                 fmt::print("faces: {}\n", faces->count);
         }
 
         indexed_mesh data;
         data.vertices.resize(vertices->count);
+        if (normals)
+            data.normals.resize(normals->count);
+        if (tex_coords)
+            data.tex_coords.resize(tex_coords->count);
         data.triangles.resize(faces->count);
 
         if (vertices->t == ply::Type::FLOAT32) {
@@ -53,6 +75,28 @@ indexed_mesh load_ply(std::string path, bool describe) {
         else
             throw std::runtime_error("bad vertex type " +
                                      ply::PropertyTable.at(vertices->t).str);
+
+        if (normals) {
+            if (normals->t == ply::Type::FLOAT32) {
+                size_t size = normals->buffer.size_bytes();
+                std::memcpy(data.normals.data(), normals->buffer.get(), size);
+            }
+            else
+                throw std::runtime_error("bad normal type " +
+                                         ply::PropertyTable.at(normals->t).str);
+        }
+
+        if (tex_coords) {
+            if (tex_coords->t == ply::Type::FLOAT32) {
+                size_t size = tex_coords->buffer.size_bytes();
+                std::memcpy(data.tex_coords.data(), tex_coords->buffer.get(),
+                            size);
+            }
+            else
+                throw std::runtime_error(
+                    "bad tex_coord type " +
+                    ply::PropertyTable.at(tex_coords->t).str);
+        }
 
         if (faces->t == ply::Type::INT32) {
             size_t size = faces->buffer.size_bytes();

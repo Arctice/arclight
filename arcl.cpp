@@ -10,6 +10,61 @@
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
 
+light sample_texture(const uv_texture&, const intersection& isect) {
+    return {isect.uv.x, isect.uv.y, 0};
+}
+
+light sample_texture(const checkerboard_texture&, const intersection& isect) {
+    Float scale{16};
+    return light{0.01} +
+           light{0.99} * std::round(std::fmod(
+                             std::round(std::fmod((isect.uv.x) * scale, 1)) +
+                                 std::round(std::fmod((isect.uv.y) * scale, 1)),
+                             2));
+}
+
+light sample_texture(const Float& constant, const intersection&) {
+    return {constant};
+}
+
+light sample_texture(const light& constant, const intersection&) {
+    return constant;
+}
+
+Float gamma_correct(Float value) {
+    if (value <= (Float)0.0031308)
+        return Float(12.92) * value;
+    return Float(1.055) * std::pow(value, 1 / (Float)2.4) - (Float)0.055;
+}
+
+Float inverse_gamma_correct(Float value) {
+    if (value <= (Float)0.04045)
+        return value * 1 / (Float)12.92;
+    return std::pow((value + 0.055f) * 1 / (Float)1.055, (Float)2.4);
+}
+
+light sample_texture(const image_texture& tex, const intersection& isect) {
+    auto [x, y] = tex.img->getSize();
+
+    auto sfc =
+        tex.img->getPixel((i32)std::fmod(std::abs(isect.uv.x * x), x),
+                          y - 1 - (i32)std::fmod(std::abs(isect.uv.y * y), y));
+
+    return {inverse_gamma_correct(sfc.r / (Float)255),
+            inverse_gamma_correct(sfc.g / (Float)255),
+            inverse_gamma_correct(sfc.b / (Float)255)};
+}
+
+light sample_texture(const texture& tex, const intersection& isect) {
+    return std::visit(
+        [&isect](auto& tex) { return sample_texture(tex, isect); }, tex);
+}
+
+Float sample_texture_1d(const texture& tex, const intersection& isect) {
+    auto c = sample_texture(tex, isect);
+    return (c.x + c.y + c.z) / 3;
+}
+
 bool same_normal_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
 bool same_shading_hemisphere(vec3f a, vec3f b) { return 0 < a.z * b.z; }
 
@@ -251,6 +306,10 @@ std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
         auto dpdu = (dAC * duvBC.y - dBC * duvAC.y) * id;
         auto dpdv = (dAC * -duvBC.x + dBC * duvAC.x) * id;
 
+        U = U / det;
+        V = V / det;
+        W = W / det;
+
         auto n = dpdu.cross(dpdv).normalized();
         if (det < 0)
             n = n * -1;
@@ -258,6 +317,7 @@ std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
         return intersection{
             .distance = t,
             .normal = n,
+            .uv = {tri.tA * U + tri.tB * V + tri.tC * W},
             .shading = {dpdu, dpdv},
         };
     }
@@ -356,7 +416,7 @@ scatter_sample scatter(const scene&, const lambertian& matte,
     auto away = sample_cosine_hemisphere(sample_2d());
     auto angle_cos = away.z;
     return scatter_sample{
-        .value = matte.reflectance / π,
+        .value = sample_texture(matte.reflectance, isect) / π,
         .direction = isect.shading.to_world(away),
         .probability = std::abs(angle_cos) / π,
     };
@@ -371,7 +431,7 @@ scatter_sample scatter(const scene&, const lambertian& matte,
 
     auto angle_cos = isect.shading.to_local(away).z;
     return scatter_sample{
-        .value = matte.reflectance / π,
+        .value = sample_texture(matte.reflectance, isect) / π,
         .direction = away,
         .probability = std::abs(angle_cos) / π,
     };
@@ -403,7 +463,7 @@ scatter_sample blinn_phong_forward(const blinn_phong& material,
 
     auto roughness = material.diffuse;
     auto glossiness = (Float)material.sharpness;
-    light reflectance{material.diffuse_color};
+    light reflectance{sample_texture(material.diffuse_color, isect)};
 
     auto diffuse = reflectance * roughness * (1 / π);
 
@@ -414,8 +474,8 @@ scatter_sample blinn_phong_forward(const blinn_phong& material,
         return ((n + 2) * (n + 4)) / (8 * π * (std::pow<Float>(2, -n / 2) + 2));
     }(glossiness);
 
-    auto specular = material.specular_color * energy_conservation *
-                    specular_intensity * (1 - roughness);
+    auto specular = sample_texture(material.specular_color, isect) *
+                    energy_conservation * specular_intensity * (1 - roughness);
 
     auto value = (specular + diffuse);
 
@@ -473,7 +533,8 @@ scatter_sample scatter(const scene&, const specular& material,
     auto away = in * -1 + vec3f{0, 0, 2 * std::abs(in.z)};
 
     auto reflectance = fresnel_conductor(
-        std::abs(in.z), {1}, material.refraction, material.absorption);
+        std::abs(in.z), {1}, sample_texture(material.refraction, isect),
+        sample_texture(material.absorption, isect));
 
     return scatter_sample{
         .value = reflectance,
@@ -567,21 +628,20 @@ Float beckmann_microfacet_geometry(Float roughness, Float a, Float b) {
     return 1 / (1 + A + B);
 }
 
-light glossy_reflection(const glossy& material, const vec3f& towards,
-                        const vec3f& away) {
+light glossy_reflection(const vec3f& towards, const vec3f& away,
+                        Float roughness, light eta, light k) {
     auto halfv = (away + towards).normalized();
     auto a = std::acos(away.z);
     auto b = std::acos(towards.z);
     auto h = std::acos(halfv.z);
 
-    auto F = fresnel_conductor(std::abs(towards.dot(halfv)), {1},
-                               material.refraction, material.absorption);
+    auto F = fresnel_conductor(std::abs(towards.dot(halfv)), {1}, eta, k);
 
-    auto D = ggx_microfacet_area(material.roughness, h);
-    auto G = ggx_microfacet_geometry(material.roughness, a, b);
+    auto D = ggx_microfacet_area(roughness, h);
+    auto G = ggx_microfacet_geometry(roughness, a, b);
 
-    // auto D = beckmann_microfacet_area(material.roughness, h);
-    // auto G = beckmann_microfacet_geometry(material.roughness, a, b);
+    // auto D = beckmann_microfacet_area(roughness, h);
+    // auto G = beckmann_microfacet_geometry(roughness, a, b);
 
     return F * D * G / (4 * std::abs(away.z) * std::abs(towards.z));
 }
@@ -593,15 +653,20 @@ scatter_sample scatter(const scene&, const glossy& material,
     // auto probability = std::abs(angle_cos) / π;
 
     auto in = isect.shading.to_local(towards).normalized();
-    auto facet = ggx_sample(material.roughness, in);
+    auto facet = ggx_sample(sample_texture_1d(material.roughness, isect), in);
     auto away = (in * -1) + facet * 2 * in.dot(facet);
 
     if (not same_shading_hemisphere(in, away))
         return {};
 
-    auto f = glossy_reflection(material, in, away);
-    auto probability = ggx_sample_pdf(material.roughness, facet, in) /
-                       (4 * std::abs(in.dot(facet)));
+    auto f = glossy_reflection(in, away,
+                               sample_texture_1d(material.roughness, isect),
+                               sample_texture(material.refraction, isect),
+                               sample_texture(material.absorption, isect));
+    auto probability =
+        ggx_sample_pdf(sample_texture_1d(material.roughness, isect), facet,
+                       in) /
+        (4 * std::abs(in.dot(facet)));
 
     return scatter_sample{
         .value = f,
@@ -616,10 +681,15 @@ scatter_sample scatter(const scene&, const glossy& material,
     auto away = isect.shading.to_local(out).normalized();
     auto in = isect.shading.to_local(towards).normalized();
     auto facet = (away + in).normalized();
-    auto probability = ggx_sample_pdf(material.roughness, facet, in) /
-                       (4 * std::abs(in.dot(facet)));
+    auto probability =
+        ggx_sample_pdf(sample_texture_1d(material.roughness, isect), facet,
+                       in) /
+        (4 * std::abs(in.dot(facet)));
     auto f = same_shading_hemisphere(in, away)
-                 ? glossy_reflection(material, in, away)
+                 ? glossy_reflection(
+                       in, away, sample_texture_1d(material.roughness, isect),
+                       sample_texture(material.refraction, isect),
+                       sample_texture(material.absorption, isect))
                  : 0;
     return scatter_sample{
         .value = f,
@@ -739,7 +809,8 @@ light naive_trace(const scene& scene, ray r, int depth) {
         return {scene.film.global_radiance};
 
     if (intersection->mat and std::get_if<emissive>(intersection->mat))
-        return std::get_if<emissive>(intersection->mat)->value;
+        return sample_texture(std::get_if<emissive>(intersection->mat)->value,
+                              *intersection);
 
     if (0 == depth)
         return {};
@@ -769,7 +840,8 @@ light scatter_trace(const scene& scene, ray r, int depth) {
 
     light emission{0};
     if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
-        emission = std::get_if<emissive>(intersection->mat)->value;
+        emission = sample_texture(
+            std::get_if<emissive>(intersection->mat)->value, *intersection);
     }
 
     if (0 == depth)
@@ -850,7 +922,8 @@ scatter_sample sample_light(const scene& scene,
     auto reflected = scatter(scene, intersection, towards, light_ray.direction);
 
     auto L = reflected.value * icos;
-    L *= std::get<emissive>(*light.n.material).value / light_probability;
+    L *= sample_texture(std::get<emissive>(*light.n.material).value, *visible) /
+         light_probability;
     L *= power_heuristic(light_probability, reflected.probability);
 
     return scatter_sample{
@@ -880,7 +953,8 @@ light light_trace(const scene& scene, ray r, int) {
     light L{};
 
     if (intersection->mat and std::get_if<emissive>(intersection->mat))
-        return std::get_if<emissive>(intersection->mat)->value;
+        return sample_texture(std::get_if<emissive>(intersection->mat)->value,
+                              *intersection);
 
     auto Ld = sample_direct_lighting(scene, *intersection, r);
     return L + Ld.value;
@@ -902,7 +976,8 @@ light path_trace(const scene& scene, ray r, int depth) {
         }
 
         if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
-            auto Le = std::get<emissive>(*intersection->mat).value;
+            auto Le = sample_texture(
+                std::get<emissive>(*intersection->mat).value, *intersection);
             if (scattering_pdf < 0)
                 L += beta * Le;
             else {
@@ -954,12 +1029,6 @@ light path_trace(const scene& scene, ray r, int depth) {
     }
 
     return L;
-}
-
-Float gamma_correct(Float value) {
-    if (value <= 0.0031308f)
-        return 12.92f * value;
-    return 1.055f * std::pow(value, (Float)(1.f / 2.4f)) - 0.055f;
 }
 
 vec3f light_to_rgb(light light) {
@@ -1082,5 +1151,3 @@ int main(int argc, char** argv) {
 // perspective camera
 // interactive preview
 // comparison tests
-// check background radiance with in path tracing
-// naive trace broke
