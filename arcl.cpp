@@ -311,8 +311,6 @@ std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
         W = W / det;
 
         auto n = dpdu.cross(dpdv).normalized();
-        if (det < 0)
-            n = n * -1;
 
         return intersection{
             .distance = t,
@@ -1145,7 +1143,6 @@ int main(int argc, char** argv) {
 
 // todo:
 // multithreaded deterministic rng
-// two-sided triangles
 // fireflies in specular test scene
 // adaptive sampling, convergence metering
 // perspective camera
