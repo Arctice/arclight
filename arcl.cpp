@@ -460,6 +460,7 @@ struct scatter_sample {
     light value{0};
     vec3f direction;
     Float probability{};
+    bool specular{false};
 };
 
 vec3f shading_frame::to_local(vec3f v) const {
@@ -479,13 +480,16 @@ vec3f shading_frame::to_world(vec3f v) const {
 }
 
 scatter_sample scatter(const scene&, const lambertian& matte,
-                       const intersection& isect, const vec3f&) {
+                       const intersection& isect, const vec3f& towards) {
+    auto in = isect.shading.to_local(towards);
     auto away = sample_cosine_hemisphere(sample_2d());
-    auto angle_cos = away.z;
+    if (in.z < 0)
+        away.z *= -1;
+
     return scatter_sample{
         .value = sample_texture(matte.reflectance, isect) / π,
         .direction = isect.shading.to_world(away),
-        .probability = std::abs(angle_cos) / π,
+        .probability = std::abs(away.z) / π,
     };
 }
 
@@ -567,6 +571,13 @@ scatter_sample scatter(const scene&, const blinn_phong& material,
 }
 
 auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
+    cos_t = std::clamp<Float>(cos_t, -1, 1);
+    auto leaving_medium = cos_t < 0;
+    if (leaving_medium) {
+        std::swap(etai, etat);
+        cos_t = std::abs(cos_t);
+    }
+
     light Eta = etat / etai;
     light Etak = k / etai;
 
@@ -594,20 +605,58 @@ auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
     return (Rp + Rs) * (Float)0.5;
 }
 
+std::optional<vec3f> transmission_direction(const vec3f& in,
+                                            const vec3f& normal,
+                                            Float refraction_ratio) {
+    auto cos_in = in.dot(normal);
+    auto sin2_in = std::max<Float>(0, (1 - cos_in * cos_in));
+    auto eta2 = refraction_ratio * refraction_ratio;
+    auto sin2_out = sin2_in * eta2;
+    if (sin2_out >= 1)
+        return {};
+    auto cos_out = std::sqrt(1 - sin2_out);
+    return in * -1 * refraction_ratio +
+           normal * (refraction_ratio * cos_in - cos_out);
+}
+
 scatter_sample scatter(const scene&, const specular& material,
                        const intersection& isect, const vec3f& towards) {
     auto in = isect.shading.to_local(towards);
-    auto away = in * -1 + vec3f{0, 0, 2 * std::abs(in.z)};
 
-    auto reflectance = fresnel_conductor(
-        std::abs(in.z), {1}, sample_texture(material.refraction, isect),
-        sample_texture(material.absorption, isect));
+    auto air_refraction = light{1};
+    auto internal_refraction = sample_texture(material.refraction, isect);
+    auto absorption = sample_texture(material.absorption, isect);
+    auto transmission_rate = sample_texture_1d(material.transmission, isect);
 
-    return scatter_sample{
-        .value = reflectance,
-        .direction = isect.shading.to_world(away),
-        .probability = std::numeric_limits<Float>::infinity(),
-    };
+    auto Fr = fresnel_conductor(in.z, air_refraction, internal_refraction,
+                                absorption);
+    auto F = (Fr.x + Fr.y + Fr.z) / 3;
+
+    if (sample_1d() < F or transmission_rate == 0) {
+        auto away = vec3f{-in.x, -in.y, in.z};
+        return scatter_sample{.value = Fr / std::abs(away.z),
+                              .direction = isect.shading.to_world(away),
+                              .probability = transmission_rate == 0 ? 1 : F,
+                              .specular = true};
+    }
+
+    auto entering = in.z > 0;
+    auto refraction_from = entering ? air_refraction : internal_refraction;
+    auto refraction_to = entering ? internal_refraction : air_refraction;
+    auto refraction_ratio = refraction_from.length() / refraction_to.length();
+
+    auto away = transmission_direction(
+        in, vec3f{0, 0, (Float)(entering ? 1 : -1)}, refraction_ratio);
+    if (not away)
+        return {.probability = 0};
+
+    auto transmission = (light{1} - Fr) * transmission_rate;
+    transmission *= refraction_ratio * refraction_ratio;
+
+    return scatter_sample{.value = transmission / std::abs(away->z),
+                          .direction = isect.shading.to_world(*away),
+                          .probability = 1 - F,
+                          .specular = true};
 }
 
 scatter_sample scatter(const scene&, const specular&, const intersection&,
@@ -722,9 +771,6 @@ scatter_sample scatter(const scene&, const glossy& material,
     auto in = isect.shading.to_local(towards).normalized();
     auto facet = ggx_sample(sample_texture_1d(material.roughness, isect), in);
     auto away = (in * -1) + facet * 2 * in.dot(facet);
-
-    if (not same_shading_hemisphere(in, away))
-        return {};
 
     auto f = glossy_reflection(in, away,
                                sample_texture_1d(material.roughness, isect),
@@ -867,8 +913,10 @@ light debug_trace(const scene& scene, ray r, int) {
     return {(norm_l + d) / 2, (norm_l + d) / 2, (norm_l + d) / 2};
 }
 
-vec3f offset_origin(const vec3f& point, const intersection& isect) {
-    return point + isect.normal * 0.00004;
+ray offset_origin(const intersection& isect, ray r) {
+    bool transmission = not same_normal_hemisphere(isect.normal, r.direction);
+    r.origin += isect.normal * 0.00004 * (transmission ? -1 : 1);
+    return r;
 }
 
 light naive_trace(const scene& scene, ray r, int depth) {
@@ -891,12 +939,12 @@ light naive_trace(const scene& scene, ray r, int depth) {
     auto f = scatter(scene, *intersection, r.direction * -1, scatter_d).value *
              icos / pdf;
 
-    if (f.length_sq() <= 0 or not same_normal_hemisphere(inorm, scatter_d))
+    if (f.length_sq() <= 0)
         return {};
 
     auto reflection_point = r.distance(intersection->distance);
     auto scatter_ray =
-        ray{offset_origin(reflection_point, *intersection), scatter_d};
+        offset_origin(*intersection, ray{reflection_point, scatter_d});
 
     auto Li = naive_trace(scene, scatter_ray, depth - 1);
     return Li * f;
@@ -924,16 +972,14 @@ light scatter_trace(const scene& scene, ray r, int depth) {
         auto scattering = scatter(scene, *intersection, r.direction * -1);
         if (scattering.value.length_sq() <= 0)
             return L;
-        if (std::isinf(scattering.probability))
-            scattering.probability = 1;
 
         auto icos = scattering.direction.dot(intersection->normal);
         auto reflectance =
             (scattering.value * std::abs(icos)) / scattering.probability;
 
         auto reflection_point = r.distance(intersection->distance);
-        auto scatter_ray = ray{offset_origin(reflection_point, *intersection),
-                               scattering.direction};
+        auto scatter_ray = offset_origin(
+            *intersection, ray{reflection_point, scattering.direction});
 
         r = scatter_ray;
         beta *= reflectance;
@@ -967,31 +1013,31 @@ scatter_sample sample_light(const scene& scene,
                             const intersection& intersection,
                             const node_instance& light, const ray& r) {
     auto intersection_point = r.distance(intersection.distance);
-    auto ray_origin = offset_origin(intersection_point, intersection);
 
     auto light_bounds = node_bounds(light);
     auto centre = light_bounds.centroid();
     auto radius = (centre - light_bounds.max).length();
 
     auto [light_direction, light_sample_pdf] =
-        sample_sphere(ray_origin, centre, radius);
+        sample_sphere(intersection_point, centre, radius);
 
     auto light_probability = 1 / (light_sample_pdf * scene.lights.size());
 
-    auto light_ray = ray{
-        .origin = ray_origin,
-        .direction = light_direction,
-    };
+    auto light_ray =
+        offset_origin(intersection, ray{.origin = intersection_point,
+                                        .direction = light_direction});
 
     auto icos = (light_ray.direction).dot(intersection.normal);
     if (icos < 0)
         return {.probability = light_probability};
 
-    auto occluded =
-        intersect(scene.root, light_ray, std::numeric_limits<Float>::max());
     auto visible =
         intersect(light, light_ray, std::numeric_limits<Float>::max());
-    if (not visible or (occluded and occluded->distance != visible->distance))
+    if (not visible)
+        return {.probability = light_probability};
+
+    auto occluded = intersect(scene.root, light_ray, visible->distance);
+    if (occluded and occluded->distance < visible->distance)
         return {.probability = light_probability};
 
     auto towards = r.direction * -1;
@@ -1045,7 +1091,7 @@ light path_trace(const scene& scene, ray r, int depth) {
             else {
                 for (size_t li{}; li < scene.lights.size(); ++li) {
                     auto d = intersect(scene.lights[li], r,
-                                       std::numeric_limits<Float>::max());
+                                       intersection->distance + gamma(32));
                     if (d and d->distance == intersection->distance) {
                         auto light_pdf =
                             sample_light(scene, *previous_intersection,
@@ -1069,24 +1115,21 @@ light path_trace(const scene& scene, ray r, int depth) {
 
         auto intersection_point = r.distance(intersection->distance);
         auto scattering = scatter(scene, *intersection, r.direction * -1);
-        if (std::isinf(scattering.probability))
-            scattering.probability = 1;
+
         auto icos = scattering.direction.dot(intersection->normal);
         auto reflected =
             (scattering.value * std::abs(icos)) / scattering.probability;
 
         beta *= reflected;
 
-        if (not same_normal_hemisphere(intersection->normal,
-                                       scattering.direction) or
-            (beta.x <= 0 and beta.y <= 0 and beta.z <= 0))
+        if (beta.length_sq() <= 0)
             break;
 
-        auto scatter_ray = ray{offset_origin(intersection_point, *intersection),
-                               scattering.direction};
-        scattering_pdf = scattering.probability;
-        previous_intersection = intersection;
+        auto scatter_ray = offset_origin(
+            *intersection, ray{intersection_point, scattering.direction});
 
+        previous_intersection = intersection;
+        scattering_pdf = scattering.specular ? -1 : scattering.probability;
         prev_ray = r;
         r = scatter_ray;
     }

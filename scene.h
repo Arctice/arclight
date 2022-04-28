@@ -26,6 +26,7 @@ struct lambertian {
 };
 
 struct specular {
+    texture transmission;
     texture refraction;
     texture absorption;
 };

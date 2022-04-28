@@ -1,0 +1,55 @@
+
+[film]
+method = "path"
+resolution = [600, 600]
+supersampling = 512
+global_radiance = 0
+depth = 12
+
+[camera]
+type = "orthographic"
+scale = 0.9
+position = [5, 4, -4]
+towards = [0.0, 0.2, 0.1]
+up = [0.001, 1, 0]
+
+[material.gold]
+type = "glossy"
+roughness = 0.2
+refraction = [0.16, 0.35, 1.5]
+absorption = [4, 2.5, 1.9]
+
+[material.copper]
+type = "glossy"
+roughness = 0.1
+refraction = [0.271, 0.677, 1.316]
+absorption = [3.61, 2.62, 2.29]
+
+[material.glass]
+type = "specular"
+absorption = [0, 0, 0]
+refraction = [1.6, 1.6, 1.6]
+transmission = [1, 1, 1]
+
+[model.dragon]
+file = "dragon.ply"
+
+[[world]]
+material = "glass"
+instance = "model.dragon"
+transform = [["translate", [0, 40, 0]], ["scale", 0.01]]
+
+[[world]]
+triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
+[[world]]
+triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
+
+[material.light]
+type = "emissive"
+light = [8, 8, 8]
+[node.overcast]
+material = "light"
+triangle = [[-1, 0, -1], [1, 0, -1], [-1, 0, 1]]
+[[world]]
+instance = "node.overcast"
+transform = [["translate", [0.2, 2, 0.1]], ["scale", 12]]

@@ -103,6 +103,7 @@ material* parse_material(scene_load_context& context,
 
     else if (type == "specular") {
         context.materials[name] = std::make_unique<material>(specular{
+            .transmission = parse_texture(context, nt["transmission"]),
             .refraction = parse_texture(context, nt["refraction"]),
             .absorption = parse_texture(context, nt["absorption"]),
         });
