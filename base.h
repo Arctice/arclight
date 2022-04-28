@@ -16,6 +16,7 @@ using vec2f = vec2<Float>;
 using vec3f = vec3<Float>;
 constexpr Float ɛ = std::numeric_limits<Float>::epsilon() * 0.5;
 constexpr Float π = 3.14159265358979323846;
+constexpr Float gamma(int n) { return (n * ɛ) / (1 - n * ɛ); }
 
 struct bounding_box {
     vec3f min{std::numeric_limits<Float>::max()};
@@ -42,13 +43,18 @@ struct bounding_box {
                       std::max(max.z, rhs.z)}};
     }
 
-    vec3f centroid() const { return (max + min) / 2; };
+    vec3f centroid() const { return (max + min) * (Float)0.5; };
 };
 
 struct triangle {
     vec3f A, B, C;
-    vec3f nA{}, nB{}, nC{};
-    vec2f tA{0, 0}, tB{1, 0}, tC{0, 1};
+};
+
+struct indexed_mesh;
+
+struct indexed_triangle {
+    const indexed_mesh* mesh;
+    vec3<int> vertices;
 };
 
 struct indexed_mesh {
@@ -57,27 +63,7 @@ struct indexed_mesh {
     std::vector<vec2f> tex_coords;
     std::vector<vec3<int>> triangles;
 
-    triangle reify(int n) const {
-        auto [a, b, c] = triangles[n];
-
-        triangle T = {
-            vertices[a], vertices[b], vertices[c],
-        };
-
-        if (not normals.empty()) {
-            T.nA = normals[a];
-            T.nB = normals[b];
-            T.nC = normals[c];
-        }
-
-        if (not tex_coords.empty()) {
-            T.tA = tex_coords[a];
-            T.tB = tex_coords[b];
-            T.tC = tex_coords[c];
-        }
-
-        return T;
-    }
+    indexed_triangle reify(int n) const { return {this, triangles[n]}; }
 };
 
 indexed_mesh load_ply(std::string path, bool describe = false);

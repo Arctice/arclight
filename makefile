@@ -21,5 +21,8 @@ dev: build
 quick: flags += -O0
 quick: build
 
+perf: flags += -O1 -g -fno-omit-frame-pointer
+perf: build
+
 debug: flags += -O1 -fsanitize=undefined,address -g -fno-omit-frame-pointer
 debug: build

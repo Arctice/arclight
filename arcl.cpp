@@ -143,11 +143,17 @@ bounding_box shape_bounds(const triangle& V) {
     return {min, max};
 }
 
-bool bbox_ray_intersection(const bounding_box& bb, const ray& ray,
-                           Float d = std::numeric_limits<Float>::max()) {
-    constexpr Float gamma3 = (3 * ɛ) / (1 - 3 * ɛ);
-    auto inv = vec3f{1.f / ray.direction.x, 1.f / ray.direction.y,
-                     1.f / ray.direction.z};
+bounding_box shape_bounds(const indexed_triangle& V) {
+    return shape_bounds(triangle{V.mesh->vertices[V.vertices.x],
+                                 V.mesh->vertices[V.vertices.y],
+                                 V.mesh->vertices[V.vertices.z]});
+}
+
+bool bbox_ray_intersection(const bounding_box& bb, const ray& ray, Float d) {
+    constexpr Float gamma3 = gamma(3);
+    auto inv =
+        vec3f{1 / ray.direction.x, 1 / ray.direction.y, 1 / ray.direction.z};
+
     Float t0 = 0., t1 = d;
     auto z = ray.origin * inv;
     for (auto d{0}; d < 3; ++d) {
@@ -169,20 +175,22 @@ std::unique_ptr<node_instance> instance(const transform& T, const node& n) {
 }
 
 bounding_box node_bounds(const triangle& n) { return shape_bounds(n); }
-bounding_box node_bounds(const node_instance& i) {
-    auto [min, max] = node_bounds(i.n);
-    return bounding_box{} | i.T.point(min) | i.T.point(max) |
-           i.T.point(vec3f{max.x, min.y, min.z}) |
-           i.T.point(vec3f{min.x, max.y, min.z}) |
-           i.T.point(vec3f{min.x, min.y, max.z}) |
-           i.T.point(vec3f{min.x, max.y, max.z}) |
-           i.T.point(vec3f{max.x, min.y, max.z}) |
-           i.T.point(vec3f{max.x, max.y, min.z}) |
-           i.T.point(vec3f{max.x, max.y, max.z});
-}
 
-bounding_box node_bounds(const bvh_mesh& n) { return n.bvh.bounds; }
-bounding_box node_bounds(const node_bvh& n) { return n.bvh.bounds; }
+bounding_box node_bounds(const node_instance& i) { return i.bounds; }
+bounding_box node_instance::transformed_bounds() {
+    auto [min, max] = node_bounds(n);
+    return bounding_box{} | T.point(min) | T.point(max) |
+           T.point(vec3f{max.x, min.y, min.z}) |
+           T.point(vec3f{min.x, max.y, min.z}) |
+           T.point(vec3f{min.x, min.y, max.z}) |
+           T.point(vec3f{min.x, max.y, max.z}) |
+           T.point(vec3f{max.x, min.y, max.z}) |
+           T.point(vec3f{max.x, max.y, min.z}) |
+           T.point(vec3f{max.x, max.y, max.z});
+};
+
+bounding_box node_bounds(const bvh_mesh& n) { return n.bvh.nodes[0].bounds; }
+bounding_box node_bounds(const node_bvh& n) { return n.bvh.nodes[0].bounds; }
 
 bounding_box node_bounds(const node& n) {
     return std::visit([](const auto& n) { return node_bounds(*n); }, n.shape);
@@ -192,12 +200,20 @@ bounding_box node_bounds(const node_view& n) {
     return std::visit([](const auto& n) { return node_bounds(*n); }, n.shape);
 }
 
-std::optional<intersection> intersect(const triangle&, const ray&);
-std::optional<intersection> intersect(const bvh_mesh&, const ray&);
-std::optional<intersection> intersect(const node_instance& i, const ray& r) {
+std::optional<intersection> intersect(const node& n, const ray& r, Float max_t);
+std::optional<intersection> intersect(const node_view& n, const ray& r,
+                                      Float max_t);
+std::optional<intersection> intersect(const triangle&, const ray&, Float max_t);
+std::optional<intersection> intersect(const bvh_mesh&, const ray&, Float max_t);
+std::optional<intersection> intersect(const node_view& n, const ray& r,
+                                      Float max_t);
+std::optional<intersection> intersect(const node_bvh&, const ray&, Float max_t);
+
+std::optional<intersection> intersect(const node_instance& i, const ray& r,
+                                      Float max_t) {
     auto Ti = i.T.inverse();
     auto ri = Ti(r);
-    auto hit = intersect(i.n, ri);
+    auto hit = intersect(i.n, ri, max_t);
     if (hit) {
         hit->normal = Ti.normal(hit->normal).normalized();
         hit->shading.dpdu = i.T.vector(hit->shading.dpdu);
@@ -206,48 +222,76 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r) {
     return hit;
 }
 
-std::optional<intersection> intersect(const node_bvh&, const ray&);
-
-std::optional<intersection> intersect(const node& n, const ray& r) {
-    auto i =
-        std::visit([r](const auto& n) { return intersect(*n, r); }, n.shape);
+std::optional<intersection> intersect(const node& n, const ray& r,
+                                      Float max_t) {
+    auto i = std::visit(
+        [&r, max_t](const auto& n) { return intersect(*n, r, max_t); },
+        n.shape);
     if (i and n.material)
         i->mat = n.material;
     return i;
 }
 
-std::optional<intersection> intersect(const node_view& n, const ray& r) {
-    auto i =
-        std::visit([r](const auto& n) { return intersect(*n, r); }, n.shape);
+std::optional<intersection> intersect(const node_view& n, const ray& r,
+                                      Float max_t) {
+    auto i = std::visit(
+        [&r, max_t](const auto& n) { return intersect(*n, r, max_t); },
+        n.shape);
     if (i and n.material)
         i->mat = n.material;
     return i;
 }
 
 struct bvh_traversal {
-    bvh_traversal(const BVH* bvh, const ray& r) : ray(r) { queue.push(bvh); }
-    const std::vector<int>* next(Float bound) {
-        if (queue.empty())
-            return nullptr;
-        const BVH* node = queue.front();
-        queue.pop();
-        if (!bbox_ray_intersection(node->bounds, ray))
-            return next(bound);
-        if (node->a)
-            queue.push(node->a.get());
-        if (node->b)
-            queue.push(node->b.get());
-        return &node->overlap;
+    bvh_traversal(const BVH* bvh, const ray& r) : bvh(bvh), ray(r) {
+        stack.push(0);
     }
-    operator bool() const { return not queue.empty(); }
+
+    std::pair<int, int> next(Float bound) {
+        while (not stack.empty()) {
+            int n = stack.top();
+            auto& node = bvh->nodes[n];
+            stack.pop();
+
+            if (!bbox_ray_intersection(node.bounds, ray, bound))
+                continue;
+
+            if (node.is_leaf())
+                return {node.offset, node.offset + node.count};
+            else {
+                auto A = n + 1;
+                auto B = node.offset;
+                if ((bvh->nodes[A].bounds.centroid() - ray.origin)
+                        .length_sq() >=
+                    (bvh->nodes[B].bounds.centroid() - ray.origin)
+                        .length_sq()) {
+                    stack.push(A);
+                    stack.push(B);
+                }
+                else {
+                    stack.push(B);
+                    stack.push(A);
+                }
+            }
+        }
+
+        return {0, 0};
+    }
+
+    operator bool() const { return not stack.empty(); }
 
 private:
-    std::queue<const BVH*> queue;
+    const BVH* bvh;
+    std::stack<int> stack;
     const ray& ray;
 };
 
 // woop et al 2013
-std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
+std::optional<intersection> intersect(const indexed_triangle& tri,
+                                      const ray& ray, Float max_t) {
+    if (not bbox_ray_intersection(shape_bounds(tri), ray, max_t))
+        return {};
+
     auto rd = ray.direction;
     auto kz = std::abs(rd.x) > std::abs(rd.y)
                   ? (std::abs(rd.x) > std::abs(rd.z) ? 0 : 2)
@@ -261,9 +305,13 @@ std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
     auto Sy = rd[ky] / rd[kz];
     auto Sz = 1 / rd[kz];
 
-    auto A = (tri.A - ray.origin);
-    auto B = (tri.B - ray.origin);
-    auto C = (tri.C - ray.origin);
+    auto tA = tri.mesh->vertices[tri.vertices.x];
+    auto tB = tri.mesh->vertices[tri.vertices.y];
+    auto tC = tri.mesh->vertices[tri.vertices.z];
+
+    auto A = (tA - ray.origin);
+    auto B = (tB - ray.origin);
+    auto C = (tC - ray.origin);
 
     auto Ax = A[kx] - Sx * A[kz];
     auto Ay = A[ky] - Sy * A[kz];
@@ -296,8 +344,8 @@ std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
     vec2f uv[3] = {{0, 0}, {1, 0}, {1, 1}};
     vec2f duvAC = uv[0] - uv[2];
     vec2f duvBC = uv[1] - uv[2];
-    vec3f dAC = tri.A - tri.B;
-    vec3f dBC = tri.B - tri.C;
+    vec3f dAC = tA - tB;
+    vec3f dBC = tB - tC;
     Float determinant = duvAC.x * duvBC.y - duvAC.y * duvBC.x;
     if (determinant == 0)
         throw;
@@ -315,58 +363,79 @@ std::optional<intersection> intersect(const triangle& tri, const ray& ray) {
         return intersection{
             .distance = t,
             .normal = n,
-            .uv = {tri.tA * U + tri.tB * V + tri.tC * W},
+            .uv = tri.mesh->normals.empty()
+                      ? (uv[0] * U + uv[1] * V + uv[2] * W)
+                      : (tri.mesh->tex_coords[tri.vertices.x] * U +
+                         tri.mesh->tex_coords[tri.vertices.y] * V +
+                         tri.mesh->tex_coords[tri.vertices.z] * W),
             .shading = {dpdu, dpdv},
         };
     }
 }
 
-std::optional<intersection> intersect(const bvh_mesh& m, const ray& ray) {
+std::optional<intersection> intersect(const triangle& T, const ray& ray,
+                                      Float max_t) {
+    indexed_mesh M{
+        .vertices = {T.A, T.B, T.C},
+        .triangles = {{0, 1, 2}},
+    };
+    return intersect(M.reify(0), ray, max_t);
+}
+
+std::optional<intersection> intersect(const bvh_mesh& m, const ray& ray,
+                                      Float max_t) {
     auto search = bvh_traversal(&m.bvh, ray);
     std::optional<intersection> result{};
-    auto nearest = std::numeric_limits<Float>::max();
+    auto nearest = max_t;
 
     while (search) {
-        auto objects = search.next(nearest);
-        if (objects)
-            for (const auto& index : *objects) {
-                auto hit = intersect(m.data.reify(index), ray);
-                if (not hit or nearest < hit->distance)
-                    continue;
+        auto [first, last] = search.next(nearest);
+        while (first != last) {
+            auto index = first++;
+            auto hit = intersect(m.data.reify(index), ray, nearest);
+            if (not hit or nearest < hit->distance)
+                continue;
 
-                nearest = hit->distance;
-                result = hit;
-            }
+            nearest = hit->distance;
+            result = hit;
+        }
     }
     return result;
 }
 
-std::optional<intersection> intersect(const node_bvh& m, const ray& ray) {
+std::optional<intersection> intersect(const node_bvh& m, const ray& ray,
+                                      Float max_t) {
     auto search = bvh_traversal(&m.bvh, ray);
     std::optional<intersection> result{};
-    auto nearest = std::numeric_limits<Float>::max();
+    auto nearest = max_t;
 
     while (search) {
-        auto objects = search.next(nearest);
-        if (objects)
-            for (const auto& index : *objects) {
-                auto hit = intersect(m.nodes[index], ray);
-                if (not hit or nearest < hit->distance)
-                    continue;
+        auto [first, last] = search.next(nearest);
+        while (first != last) {
+            auto index = first++;
+            auto hit = intersect(m.nodes[index], ray, nearest);
+            if (not hit or nearest < hit->distance)
+                continue;
 
-                nearest = hit->distance;
-                result = hit;
-            }
+            nearest = hit->distance;
+            result = hit;
+        }
     }
     return result;
 }
 
 std::unique_ptr<bvh_mesh> load_model(std::string path) {
-    auto ply_mesh = load_ply(path);
-    auto mesh = bvh_mesh{ply_mesh, {}};
-    mesh.bvh = build_bvh(mesh.data.triangles.size(), [&mesh](size_t n) {
-        return shape_bounds(mesh.data.reify(n));
-    });
+    indexed_mesh data = load_ply(path);
+    auto mesh = bvh_mesh{{}, {}};
+    mesh.bvh = build_bvh(
+        data.triangles.size(),
+        [&data](size_t n) { return shape_bounds(data.reify(n)); },
+        [&data, &mesh](size_t index) {
+            mesh.data.triangles.push_back(data.triangles[index]);
+        });
+    mesh.data.vertices = std::move(data.vertices);
+    mesh.data.normals = std::move(data.normals);
+    mesh.data.tex_coords = std::move(data.tex_coords);
     return std::make_unique<bvh_mesh>(std::move(mesh));
 }
 
@@ -788,7 +857,8 @@ scatter_sample scatter(const scene& scene, const intersection& isect,
 }
 
 light debug_trace(const scene& scene, ray r, int) {
-    auto intersection = intersect(scene.root, r);
+    auto intersection =
+        intersect(scene.root, r, std::numeric_limits<Float>::max());
     if (not intersection)
         return {};
     auto ncos = intersection->normal.dot(r.direction);
@@ -802,7 +872,8 @@ vec3f offset_origin(const vec3f& point, const intersection& isect) {
 }
 
 light naive_trace(const scene& scene, ray r, int depth) {
-    auto intersection = intersect(scene.root, r);
+    auto intersection =
+        intersect(scene.root, r, std::numeric_limits<Float>::max());
     if (not intersection)
         return {scene.film.global_radiance};
 
@@ -832,41 +903,44 @@ light naive_trace(const scene& scene, ray r, int depth) {
 }
 
 light scatter_trace(const scene& scene, ray r, int depth) {
-    auto intersection = intersect(scene.root, r);
-    if (not intersection)
-        return {scene.film.global_radiance};
+    light beta{1};
+    light L{};
 
-    light emission{0};
-    if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
-        emission = sample_texture(
-            std::get_if<emissive>(intersection->mat)->value, *intersection);
+    while (true) {
+        auto intersection =
+            intersect(scene.root, r, std::numeric_limits<Float>::max());
+        if (not intersection)
+            return {scene.film.global_radiance};
+
+        if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
+            L += beta *
+                 sample_texture(std::get_if<emissive>(intersection->mat)->value,
+                                *intersection);
+        }
+
+        if (0 >= depth--)
+            return L;
+
+        auto scattering = scatter(scene, *intersection, r.direction * -1);
+        if (scattering.value.length_sq() <= 0)
+            return L;
+        if (std::isinf(scattering.probability))
+            scattering.probability = 1;
+
+        auto icos = scattering.direction.dot(intersection->normal);
+        auto reflectance =
+            (scattering.value * std::abs(icos)) / scattering.probability;
+
+        auto reflection_point = r.distance(intersection->distance);
+        auto scatter_ray = ray{offset_origin(reflection_point, *intersection),
+                               scattering.direction};
+
+        r = scatter_ray;
+        beta *= reflectance;
     }
 
-    if (0 == depth)
-        return emission;
-
-    auto scattering = scatter(scene, *intersection, r.direction * -1);
-    auto icos = scattering.direction.dot(intersection->normal);
-
-    if (std::isinf(scattering.probability))
-        scattering.probability = 1;
-
-    auto reflectance = (scattering.value * icos) / scattering.probability;
-
-    if ((reflectance.x <= 0 and reflectance.y <= 0 and reflectance.z <= 0) or
-        not same_normal_hemisphere(intersection->normal, scattering.direction))
-        return emission;
-
-    auto reflection_point = r.distance(intersection->distance);
-    auto scatter_ray = ray{offset_origin(reflection_point, *intersection),
-                           scattering.direction};
-
-    auto L = scatter_trace(scene, scatter_ray, depth - 1);
-
-    return emission + reflectance * L;
+    return L;
 }
-
-Float power_heuristic(Float f, Float g) { return (f * f) / (f * f + g * g); }
 
 std::pair<vec3f, Float> sample_sphere(vec3f point, const vec3f& centre,
                                       Float radius) {
@@ -886,6 +960,8 @@ std::pair<vec3f, Float> sample_sphere(vec3f point, const vec3f& centre,
     auto probability = pdf_uniform_cone(cone_cos);
     return {direction, probability};
 }
+
+Float power_heuristic(Float f, Float g) { return (f * f) / (f * f + g * g); }
 
 scatter_sample sample_light(const scene& scene,
                             const intersection& intersection,
@@ -911,8 +987,10 @@ scatter_sample sample_light(const scene& scene,
     if (icos < 0)
         return {.probability = light_probability};
 
-    auto visible = intersect(light, light_ray);
-    auto occluded = intersect(scene.root, light_ray);
+    auto occluded =
+        intersect(scene.root, light_ray, std::numeric_limits<Float>::max());
+    auto visible =
+        intersect(light, light_ray, std::numeric_limits<Float>::max());
     if (not visible or (occluded and occluded->distance != visible->distance))
         return {.probability = light_probability};
 
@@ -943,21 +1021,6 @@ scatter_sample sample_direct_lighting(const scene& scene,
     return sample_light(scene, intersection, scene.lights[one_light], r);
 }
 
-light light_trace(const scene& scene, ray r, int) {
-    auto intersection = intersect(scene.root, r);
-    if (not intersection)
-        return {scene.film.global_radiance};
-
-    light L{};
-
-    if (intersection->mat and std::get_if<emissive>(intersection->mat))
-        return sample_texture(std::get_if<emissive>(intersection->mat)->value,
-                              *intersection);
-
-    auto Ld = sample_direct_lighting(scene, *intersection, r);
-    return L + Ld.value;
-}
-
 light path_trace(const scene& scene, ray r, int depth) {
     light beta{1};
     light L{};
@@ -967,7 +1030,8 @@ light path_trace(const scene& scene, ray r, int depth) {
     Float scattering_pdf{-1};
 
     while (true) {
-        auto intersection = intersect(scene.root, r);
+        auto intersection =
+            intersect(scene.root, r, std::numeric_limits<Float>::max());
         if (not intersection) {
             L += beta * light{scene.film.global_radiance};
             break;
@@ -980,7 +1044,8 @@ light path_trace(const scene& scene, ray r, int depth) {
                 L += beta * Le;
             else {
                 for (size_t li{}; li < scene.lights.size(); ++li) {
-                    auto d = intersect(scene.lights[li], r);
+                    auto d = intersect(scene.lights[li], r,
+                                       std::numeric_limits<Float>::max());
                     if (d and d->distance == intersection->distance) {
                         auto light_pdf =
                             sample_light(scene, *previous_intersection,
@@ -1027,6 +1092,22 @@ light path_trace(const scene& scene, ray r, int depth) {
     }
 
     return L;
+}
+
+light light_trace(const scene& scene, ray r, int) {
+    auto intersection =
+        intersect(scene.root, r, std::numeric_limits<Float>::max());
+    if (not intersection)
+        return {scene.film.global_radiance};
+
+    light L{};
+
+    if (intersection->mat and std::get_if<emissive>(intersection->mat))
+        return sample_texture(std::get_if<emissive>(intersection->mat)->value,
+                              *intersection);
+
+    auto Ld = sample_direct_lighting(scene, *intersection, r);
+    return L + Ld.value;
 }
 
 vec3f light_to_rgb(light light) {
@@ -1100,10 +1181,15 @@ int main(int argc, char** argv) {
 #pragma omp parallel for schedule(monotonic : dynamic)
         for (int y = 0; y < resolution.y; ++y) {
             for (int x = 0; x < resolution.x; ++x) {
-                auto px = vec2{x, y};
-                auto jitter = sample_2d();
-                auto ray = scene.view.point(vec2f{px} + jitter);
-                auto light = trace(scene, ray, scene.film.depth);
+
+                light light{NAN, NAN, NAN};
+                do {
+                    auto px = vec2{x, y};
+                    auto jitter = sample_2d();
+                    auto ray = scene.view.point(vec2f{px} + jitter);
+                    light = trace(scene, ray, scene.film.depth);
+                } while (std::isnan(light.x) or std::isnan(light.y) or
+                         std::isnan(light.z));
 
                 auto px_offset = (y * resolution.x + x);
                 light_total[px_offset] += light;
@@ -1142,6 +1228,7 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
+// more accurate light bounding spheres
 // multithreaded deterministic rng
 // fireflies in specular test scene
 // adaptive sampling, convergence metering

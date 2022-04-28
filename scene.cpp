@@ -164,17 +164,20 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
     }
 
     if (nt.contains("group")) {
-        auto group = std::make_unique<node_bvh>();
+        std::vector<node> nodes;
 
         for (auto& [k, v] : nt) {
             if (v.is_table()) {
-                group->nodes.push_back(parse_node(context, *v.as_table()));
+                nodes.push_back(parse_node(context, *v.as_table()));
             }
         }
 
-        group->bvh = build_bvh(group->nodes.size(), [&group](size_t n) {
-            return node_bounds(group->nodes[n]);
-        });
+        auto group = std::make_unique<node_bvh>();
+        group->bvh = build_bvh(
+            nodes.size(), [&nodes](size_t n) { return node_bounds(nodes[n]); },
+            [&nodes, &group](size_t index) {
+                group->nodes.push_back(std::move(nodes[index]));
+            });
 
         return {{std::move(group)}, material};
     }
@@ -282,16 +285,18 @@ scene load_scene(std::string path) {
             nodes[name] = parse_node(context, *vt);
         }
 
-    auto root = std::make_unique<node_bvh>();
-
+    std::vector<node> root_nodes;
     auto world = *config["world"].as_array();
     for (auto& x : world)
-        root->nodes.push_back(parse_node(context, *x.as_table()));
+        root_nodes.push_back(parse_node(context, *x.as_table()));
 
-    fmt::print("world bvh... \n");
-    root->bvh = build_bvh(root->nodes.size(), [&root](size_t n) {
-        return node_bounds(root->nodes[n]);
-    });
+    auto root = std::make_unique<node_bvh>();
+    root->bvh = build_bvh(
+        root_nodes.size(),
+        [&root_nodes](size_t n) { return node_bounds(root_nodes[n]); },
+        [&root, &root_nodes](size_t index) {
+            root->nodes.push_back(std::move(root_nodes[index]));
+        });
 
     std::vector<node> assets;
     for (auto& [name, node] : context.nodes) assets.push_back(std::move(node));

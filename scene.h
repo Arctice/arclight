@@ -2,13 +2,15 @@
 #include "base.h"
 #include <variant>
 #include <numeric>
+#include <stack>
+
 #include <SFML/Graphics.hpp>
 
 using light = vec3f;
 
 struct uv_texture {};
 struct checkerboard_texture {};
-struct image_texture{
+struct image_texture {
     sf::Image* img;
 };
 
@@ -49,7 +51,6 @@ struct mixed_material {
     std::vector<std::pair<Float, const material*>> layers;
 };
 
-
 struct ray {
     vec3f origin;
     vec3f direction;
@@ -72,10 +73,21 @@ struct intersection {
     material* mat{};
 };
 
-struct BVH {
+struct BVH_tree {
     bounding_box bounds;
     std::vector<int> overlap;
-    std::unique_ptr<BVH> a, b;
+    std::unique_ptr<BVH_tree> a, b;
+};
+
+struct BVH {
+    struct node {
+        bounding_box bounds;
+        int offset{-1};
+        int count{-1};
+        bool is_leaf() const { return 0 <= count; }
+    };
+
+    std::vector<node> nodes;
 };
 
 struct bvh_mesh {
@@ -87,8 +99,8 @@ struct node_bvh;
 struct node_instance;
 
 template <template <class> class Wrapper> struct node_body {
-    std::variant<Wrapper<triangle>, Wrapper<bvh_mesh>,
-                 Wrapper<node_bvh>, Wrapper<node_instance>>
+    std::variant<Wrapper<triangle>, Wrapper<bvh_mesh>, Wrapper<node_bvh>,
+                 Wrapper<node_instance>>
         shape;
     material* material{};
 };
@@ -115,14 +127,15 @@ partition_dimension(const std::vector<int>& objs, Fn&& bound) {
         return {2, all.min.z + size.z / 2};
 }
 
-template <class Fn> BVH build_bvh(const std::vector<int>& objs, Fn&& bound) {
-    BVH node;
+template <class Fn>
+BVH_tree build_bvh(const std::vector<int>& objs, Fn&& bound) {
+    BVH_tree node;
     auto [dimension, cut] = partition_dimension(objs, bound);
     node.bounds = {{std::numeric_limits<Float>::max()},
                    {std::numeric_limits<Float>::lowest()}};
     for (auto index : objs) node.bounds = node.bounds | bound(index);
 
-    if (objs.size() <= 8) {
+    if (objs.size() <= 16) {
         node.overlap = objs;
         return node;
     }
@@ -138,23 +151,58 @@ template <class Fn> BVH build_bvh(const std::vector<int>& objs, Fn&& bound) {
     }
 
     if (not L.empty())
-        node.a = std::make_unique<BVH>(build_bvh(L, bound));
+        node.a = std::make_unique<BVH_tree>(build_bvh(L, bound));
     if (not R.empty())
-        node.b = std::make_unique<BVH>(build_bvh(R, bound));
+        node.b = std::make_unique<BVH_tree>(build_bvh(R, bound));
 
     return node;
 }
 
-template <class Fn> BVH build_bvh(const size_t size, Fn&& bound) {
+template <class FnIndexCallback>
+inline BVH flatten_bvh(const BVH_tree& tree, FnIndexCallback&& index_callback) {
+    BVH bvh;
+    std::stack<std::pair<int, const BVH_tree*>> stack;
+    stack.push({-1, &tree});
+    size_t object_count{0};
+
+    while (not stack.empty()) {
+        auto [parent, tree_node] = stack.top();
+        stack.pop();
+        if (tree_node == nullptr)
+            continue;
+
+        int node_index = bvh.nodes.size();
+        if (0 <= parent)
+            bvh.nodes[parent].offset = node_index;
+        bvh.nodes.push_back({tree_node->bounds});
+
+        auto& node = bvh.nodes.back();
+        if (0 < tree_node->overlap.size()) {
+            node.offset = object_count;
+            node.count = tree_node->overlap.size();
+            for (auto i : tree_node->overlap) {
+                index_callback(i);
+                object_count++;
+            }
+        }
+        else {
+            stack.push({node_index, tree_node->b.get()});
+            stack.push({-1, tree_node->a.get()});
+        }
+    }
+    return bvh;
+}
+
+template <class FnBoundary, class FnIndexCallback>
+BVH build_bvh(const size_t size, FnBoundary&& bound,
+              FnIndexCallback&& index_callback) {
     std::vector<int> indices(size);
     std::iota(indices.begin(), indices.end(), 0);
-    return build_bvh(indices, bound);
+    return flatten_bvh(build_bvh(indices, bound), index_callback);
 }
 
 bounding_box node_bounds(const node& n);
-std::optional<intersection> intersect(const node& n, const ray& r);
 bounding_box node_bounds(const node_view& n);
-std::optional<intersection> intersect(const node_view& n, const ray& r);
 
 struct matrix_sq4 {
     Float m[4][4];
@@ -329,10 +377,15 @@ inline node_view make_node_view(const node& n) {
 }
 
 struct node_instance {
-    node_instance(transform T, const node_view& n) : T(T), n(n) {}
-    node_instance(transform T, const node& n) : T(T), n(make_node_view(n)) {}
-    transform T;
+    bounding_box transformed_bounds();
+
+    node_instance(transform T, const node_view& n)
+        : T(T), n(n), bounds(transformed_bounds()) {}
+    node_instance(transform T, const node& n)
+        : T(T), n(make_node_view(n)), bounds(transformed_bounds()) {}
+    const transform T;
     node_view n;
+    const bounding_box bounds;
 };
 
 std::unique_ptr<node_instance> instance(const transform& T, const node& n);

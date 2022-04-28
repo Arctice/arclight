@@ -2,7 +2,10 @@
 #include <cmath>
 
 Float uniform_rng() {
-    thread_local static unsigned short int xsubi[3]{};
+    thread_local static int aslr;
+    thread_local static unsigned short int xsubi[3]{
+        u16(((u64)&aslr >> 32) & 0xFFFF), u16(((u64)&aslr > 16) & 0xFFFF),
+        u16(((u64)&aslr) & 0xFFFF)};
     return erand48(xsubi);
 }
 
