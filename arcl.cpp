@@ -68,25 +68,136 @@ Float sample_texture_1d(const texture& tex, const intersection& isect) {
 bool same_normal_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
 bool same_shading_hemisphere(vec3f a, vec3f b) { return 0 < a.z * b.z; }
 
-std::vector<node_instance> collect_lights(const node_instance* node,
-                                          transform T = transform::identity());
-std::vector<node_instance> collect_lights(const node* node,
-                                          transform T = transform::identity());
-std::vector<node_instance> collect_lights(const node_bvh* node,
-                                          transform T = transform::identity());
+bool is_emissive(material* m) { return std::holds_alternative<emissive>(*m); }
 
-std::vector<node_instance> collect_lights(const triangle*, const transform&) {
+light emitted_light(const intersection& intersection) {
+    return sample_texture(std::get_if<emissive>(intersection.mat)->value,
+                          intersection);
+}
+
+bounding_sphere ritter_update(bounding_sphere S, vec3f P) {
+    auto r2 = S.radius * S.radius;
+    auto D = S.centre - P;
+    auto d2 = D.length_sq();
+    if (d2 < r2)
+        return S;
+    auto d = std::sqrt(d2);
+    auto next_r = (S.radius + d) * 0.5;
+    auto offset = d - next_r;
+    S.centre = (S.centre * next_r + P * offset) / d;
+    S.radius = next_r;
+    return S;
+}
+
+bounding_sphere merge_spheres(bounding_sphere A, bounding_sphere B) {
+    auto D = (A.centre - B.centre);
+    auto n = D.normalized();
+    auto fA = A.centre + n * A.radius;
+    auto fB = B.centre + n * (-B.radius);
+    auto R = (fA - fB).length();
+    if (R <= A.radius)
+        return A;
+    if (R <= B.radius)
+        return B;
+    auto C = fA + (fB - fA) * 0.5;
+    return {C, R};
+}
+
+bounding_sphere find_bounding_sphere(const triangle*);
+bounding_sphere find_bounding_sphere(const node_instance*);
+bounding_sphere find_bounding_sphere(const node_view*);
+bounding_sphere find_bounding_sphere(const node*);
+bounding_sphere find_bounding_sphere(const node_bvh*);
+bounding_sphere find_bounding_sphere(const bvh_mesh*);
+
+bounding_sphere find_bounding_sphere(const triangle* t) {
+    auto& [A, B, C] = *t;
+    auto AC = C - A;
+    auto AB = B - A;
+    auto Z = AB.cross(AC);
+    vec3f AO = (Z.cross(AB) * AC.length_sq() + AC.cross(Z) * AB.length_sq()) /
+               (2 * Z.length_sq());
+    return bounding_sphere{A + AO, AO.length()};
+}
+
+bounding_sphere find_bounding_sphere(const bvh_mesh* bvh) {
+    // ritter's approximate bounding sphere
+    auto& points = bvh->data.vertices;
+    auto init_point = points[0];
+    Float d2 = 0;
+    vec3f x{init_point}, y{init_point};
+    for (auto& p : points) {
+        auto nd = (p - init_point).length_sq();
+        if (nd > d2) {
+            d2 = nd;
+            x = p;
+        }
+    }
+    for (auto& p : points) {
+        auto nd = (y - x).length_sq();
+        if (nd > d2) {
+            d2 = nd;
+            y = p;
+        }
+    }
+
+    auto S =
+        bounding_sphere{x + (y - x) * (Float)0.5, std::sqrt(d2) * (Float)0.5};
+    for (auto& p : points) S = ritter_update(S, p);
+    return S;
+}
+
+bounding_sphere find_bounding_sphere(const node_instance* instance) {
+    auto T = instance->T;
+    auto sphere = find_bounding_sphere(&instance->n);
+    return {T.point(sphere.centre), T.vector({0, 0, sphere.radius}).length()};
+}
+
+bounding_sphere find_bounding_sphere(const node_bvh* bvh) {
+    if (bvh->nodes.empty())
+        std::runtime_error("empty node bvh");
+    auto sphere = find_bounding_sphere(&bvh->nodes[0]);
+    for (auto& node : bvh->nodes)
+        sphere = merge_spheres(sphere, find_bounding_sphere(&node));
+    return sphere;
+}
+
+bounding_sphere find_bounding_sphere(const node* node) {
+    return std::visit([&](auto& v) { return find_bounding_sphere(v.get()); },
+                      node->shape);
+}
+
+bounding_sphere find_bounding_sphere(const node_view* node) {
+    return std::visit([&](auto& v) { return find_bounding_sphere(v); },
+                      node->shape);
+}
+
+std::vector<light_source> collect_lights(const node_instance* node,
+                                         transform T = transform::identity());
+std::vector<light_source> collect_lights(const node* node,
+                                         transform T = transform::identity());
+std::vector<light_source> collect_lights(const node_bvh* node,
+                                         transform T = transform::identity());
+
+std::vector<light_source> collect_lights(const triangle*, const transform&) {
     return {};
 }
 
-std::vector<node_instance> collect_lights(const bvh_mesh*, const transform&) {
+std::vector<light_source> collect_lights(const bvh_mesh*, const transform&) {
     return {};
 }
 
-std::vector<node_instance> collect_lights(const node* node, transform T) {
-    if (node->material and std::holds_alternative<emissive>(*node->material)) {
-        std::vector<node_instance> lights;
-        lights.push_back(node_instance{T, *node});
+std::vector<light_source> collect_lights(const node_bvh* bvh, transform T) {
+    std::vector<light_source> lights;
+    for (auto& node : bvh->nodes)
+        for (auto& light : collect_lights(&node, T)) lights.push_back(light);
+    return lights;
+}
+
+std::vector<light_source> collect_lights(const node* node, transform T) {
+    if (node->material and is_emissive(node->material)) {
+        std::vector<light_source> lights;
+        lights.push_back({node_instance{T, *node}, find_bounding_sphere(node)});
         return lights;
     }
     else
@@ -96,23 +207,14 @@ std::vector<node_instance> collect_lights(const node* node, transform T) {
     return {};
 }
 
-std::vector<node_instance> collect_lights(const node_bvh* bvh, transform T) {
-    std::vector<node_instance> lights;
-
-    for (auto& node : bvh->nodes)
-        for (auto& light : collect_lights(&node, T)) lights.push_back(light);
-
-    return lights;
-}
-
-std::vector<node_instance> collect_lights(const node_instance* node,
-                                          transform T) {
+std::vector<light_source> collect_lights(const node_instance* node,
+                                         transform T) {
     T = node->T.compose(T);
 
-    if (node->n.material and
-        std::holds_alternative<emissive>(*node->n.material)) {
-        std::vector<node_instance> lights;
-        lights.push_back(node_instance{T, node->n});
+    if (node->n.material and is_emissive(node->n.material)) {
+        std::vector<light_source> lights;
+        lights.push_back(
+            {node_instance{T, node->n}, find_bounding_sphere(node)});
         return lights;
     }
     else
@@ -510,20 +612,12 @@ scatter_sample scatter(const scene&, const lambertian& matte,
 
 scatter_sample scatter(const scene&, const emissive&, const intersection&,
                        const vec3f&) {
-    return scatter_sample{
-        .value = 0,
-        .direction = {0, 0, 1},
-        .probability = 1,
-    };
+    return scatter_sample{};
 }
 
 scatter_sample scatter(const scene&, const emissive&, const intersection&,
                        const vec3f&, const vec3f&) {
-    return scatter_sample{
-        .value = 0,
-        .direction = {0, 0, 1},
-        .probability = 1,
-    };
+    return scatter_sample{};
 }
 
 scatter_sample blinn_phong_forward(const blinn_phong& material,
@@ -925,9 +1019,8 @@ light naive_trace(const scene& scene, ray r, int depth) {
     if (not intersection)
         return {scene.film.global_radiance};
 
-    if (intersection->mat and std::get_if<emissive>(intersection->mat))
-        return sample_texture(std::get_if<emissive>(intersection->mat)->value,
-                              *intersection);
+    if (intersection->mat and is_emissive(intersection->mat))
+        return emitted_light(*intersection);
 
     if (0 == depth)
         return {};
@@ -960,10 +1053,8 @@ light scatter_trace(const scene& scene, ray r, int depth) {
         if (not intersection)
             return {scene.film.global_radiance};
 
-        if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
-            L += beta *
-                 sample_texture(std::get_if<emissive>(intersection->mat)->value,
-                                *intersection);
+        if (intersection->mat and is_emissive(intersection->mat)) {
+            L += beta * emitted_light(*intersection);
         }
 
         if (0 >= depth--)
@@ -988,11 +1079,11 @@ light scatter_trace(const scene& scene, ray r, int depth) {
     return L;
 }
 
-std::pair<vec3f, Float> sample_sphere(vec3f point, const vec3f& centre,
-                                      Float radius) {
-    auto disk_normal = (point - centre).normalized();
-    auto disk_radius = radius;
-    auto disk_centre = centre + disk_normal * disk_radius;
+std::pair<vec3f, Float> sample_sphere(const bounding_sphere& sphere,
+                                      vec3f point) {
+    auto disk_normal = (point - sphere.centre).normalized();
+    auto disk_radius = sphere.radius;
+    auto disk_centre = sphere.centre + disk_normal * disk_radius;
 
     auto t0 = vec3f{0, disk_normal.z, -disk_normal.y}.normalized();
     // auto t0 = vec3f{-disk_normal.z, 0, disk_normal.x}.normalized();
@@ -1011,15 +1102,12 @@ Float power_heuristic(Float f, Float g) { return (f * f) / (f * f + g * g); }
 
 scatter_sample sample_light(const scene& scene,
                             const intersection& intersection,
-                            const node_instance& light, const ray& r) {
+                            const light_source& source, const ray& r) {
     auto intersection_point = r.distance(intersection.distance);
 
-    auto light_bounds = node_bounds(light);
-    auto centre = light_bounds.centroid();
-    auto radius = (centre - light_bounds.max).length();
-
+    auto& [light, light_bounds] = source;
     auto [light_direction, light_sample_pdf] =
-        sample_sphere(intersection_point, centre, radius);
+        sample_sphere(light_bounds, intersection_point);
 
     auto light_probability = 1 / (light_sample_pdf * scene.lights.size());
 
@@ -1043,10 +1131,10 @@ scatter_sample sample_light(const scene& scene,
     auto towards = r.direction * -1;
     auto reflected = scatter(scene, intersection, towards, light_ray.direction);
 
-    auto L = reflected.value * icos;
-    L *= sample_texture(std::get<emissive>(*light.n.material).value, *visible) /
+    auto L = emitted_light(*visible);
+    L *= reflected.value * icos;
+    L *= power_heuristic(light_probability, reflected.probability) /
          light_probability;
-    L *= power_heuristic(light_probability, reflected.probability);
 
     return scatter_sample{
         .value = L,
@@ -1060,10 +1148,8 @@ scatter_sample sample_direct_lighting(const scene& scene,
                                       const ray& r) {
     if (scene.lights.empty())
         return {};
-
     auto one_light = std::clamp<int>((int)(sample_1d() * scene.lights.size()),
                                      0, scene.lights.size() - 1);
-
     return sample_light(scene, intersection, scene.lights[one_light], r);
 }
 
@@ -1083,14 +1169,13 @@ light path_trace(const scene& scene, ray r, int depth) {
             break;
         }
 
-        if (intersection->mat and std::get_if<emissive>(intersection->mat)) {
-            auto Le = sample_texture(
-                std::get<emissive>(*intersection->mat).value, *intersection);
+        if (intersection->mat and is_emissive(intersection->mat)) {
+            auto Le = emitted_light(*intersection);
             if (scattering_pdf < 0)
                 L += beta * Le;
             else {
                 for (size_t li{}; li < scene.lights.size(); ++li) {
-                    auto d = intersect(scene.lights[li], r,
+                    auto d = intersect(scene.lights[li].first, r,
                                        intersection->distance + gamma(32));
                     if (d and d->distance == intersection->distance) {
                         auto light_pdf =
@@ -1145,9 +1230,8 @@ light light_trace(const scene& scene, ray r, int) {
 
     light L{};
 
-    if (intersection->mat and std::get_if<emissive>(intersection->mat))
-        return sample_texture(std::get_if<emissive>(intersection->mat)->value,
-                              *intersection);
+    if (intersection->mat and is_emissive(intersection->mat))
+        return emitted_light(*intersection);
 
     auto Ld = sample_direct_lighting(scene, *intersection, r);
     return L + Ld.value;
@@ -1271,9 +1355,7 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
-// more accurate light bounding spheres
 // multithreaded deterministic rng
-// fireflies in specular test scene
 // adaptive sampling, convergence metering
 // perspective camera
 // interactive preview

@@ -1,9 +1,10 @@
 
 [film]
 method = "path"
-resolution = [1000, 1000]
+resolution = [800, 800]
 supersampling = 1024
-global_radiance = 0
+global_radiance = 0.02
+depth = 8
 
 [camera]
 type = "orthographic"
@@ -46,30 +47,26 @@ roughness = 0.22
 refraction = [0.271, 0.677, 1.316]
 absorption = [3.61, 2.62, 2.29]
 
+[material.glass]
+type = "specular"
+absorption = [0, 0, 0]
+refraction = [1.6, 1.6, 1.6]
+transmission = [1, 1, 1]
+
+[material.lit]
+type = "emissive"
+light = [16, 16, 16]
 
 
-
-[node.overcast]
-material = "light"
-triangle = [[-1, 0, -1], [1, 0, -1], [-1, 0, 1]]
+[[world]]
+material = "lead"
+triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
+[[world]]
+material = "lead"
+triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
 
 [model.dragon]
 file = "dragon.ply"
-
-[[world]]
-instance = "model.dragon"
-material = "gold"
-transform = [["translate", [0, 40, 0]], ["scale", 0.01]]
-
-[[world]]
-instance = "model.dragon"
-material = "silver"
-transform = [["rotate-y", 1], ["translate", [200, 40, -100]], ["scale", 0.01]]
-
-[[world]]
-instance = "model.dragon"
-material = "platinum"
-transform = [["rotate-y", 2], ["translate", [-100, 40, 200]], ["scale", 0.01]]
 
 [[world]]
 instance = "model.dragon"
@@ -78,19 +75,30 @@ transform = [["rotate-y", 5], ["translate", [-200, 40, 40]], ["scale", 0.01]]
 
 [[world]]
 instance = "model.dragon"
-material = "lead"
-transform = [["translate", [200, 40, 100]], ["scale", 0.01], ["rotate-y", 2]]
+material = "platinum"
+transform = [["rotate-y", 2], ["translate", [-100, 40, 200]], ["scale", 0.01]]
 
 [[world]]
-triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
-[[world]]
-triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
-
-[material.lit]
-type = "emissive"
-light = [20, 20, 20]
+instance = "model.dragon"
+material = "gold"
+transform = [["rotate-y", 0], ["translate", [0, 40, -5]], ["scale", 0.01]]
 
 [[world]]
 instance = "model.dragon"
 material = "lit"
 transform = [["rotate-y", 1.2], ["translate", [140, 40, 50]], ["scale", 0.01]]
+
+[[world]]
+instance = "model.dragon"
+material = "lead"
+transform = [["rotate-y", -0.5], ["translate", [200, 40, 100]], ["scale", 0.01], ["rotate-y", 2]]
+
+[[world]]
+instance = "model.dragon"
+material = "glass"
+transform = [["rotate-y", -1.3], ["translate", [70, 40, -110]], ["scale", 0.01]]
+
+[[world]]
+instance = "model.dragon"
+material = "silver"
+transform = [["rotate-y", 1], ["translate", [200, 40, -100]], ["scale", 0.01]]

@@ -2,7 +2,7 @@
 [film]
 method = "path"
 resolution = [400, 400]
-supersampling = 400
+supersampling = 8
 global_radiance = 0
 
 [camera]

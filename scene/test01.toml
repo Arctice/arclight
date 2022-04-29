@@ -2,7 +2,7 @@
 [film]
 method = "path"
 resolution = [400, 400]
-supersampling = 128
+supersampling = 8
 global_radiance = 0
 
 [camera]
@@ -53,4 +53,3 @@ transform = [["translate", [0, 6, 2]]]
 [[world]]
 instance = "node.light"
 transform = [["scale", 1.6], ["translate", [-6, 7, 6]]]
-

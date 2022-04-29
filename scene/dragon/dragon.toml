@@ -2,7 +2,7 @@
 [film]
 method = "path"
 resolution = [600, 600]
-supersampling = 512
+supersampling = 32
 global_radiance = 0
 
 [camera]
@@ -43,12 +43,14 @@ triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
 [[world]]
 triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
 
+[model.sphere]
+file = "../sphere.ply"
 [material.light]
 type = "emissive"
 light = [8, 8, 8]
-[node.overcast]
-material = "light"
-triangle = [[-1, 0, -1], [1, 0, -1], [-1, 0, 1]]
+[node.light]
 [[world]]
-instance = "node.overcast"
-transform = [["translate", [0.2, 2, 0.1]], ["scale", 12]]
+material = "light"
+instance = "model.sphere"
+transform = [["scale", 9], ["translate", [6, 24, 1.2]]]
+

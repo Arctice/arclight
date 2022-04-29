@@ -406,12 +406,19 @@ struct film {
     Float global_radiance;
 };
 
+struct bounding_sphere {
+    vec3f centre;
+    Float radius;
+};
+
+using light_source = std::pair<node_instance, bounding_sphere>;
+
 struct scene {
     film film;
     node root;
     camera view;
     std::vector<std::unique_ptr<material>> materials;
-    std::vector<node_instance> lights;
+    std::vector<light_source> lights;
     std::vector<node> assets;
     std::unordered_map<std::string, sf::Image> images;
 };
