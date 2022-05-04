@@ -398,8 +398,15 @@ enum class integrator {
     path,
 };
 
+enum class sampler {
+    independent,
+    stratified,
+    multi_stratified,
+};
+
 struct film {
     integrator method;
+    sampler sampler;
     vec2<int> resolution;
     int supersampling;
     int depth;

@@ -8,8 +8,9 @@ objs=$(src:.cpp=.o)
 %.o : %.cpp $(headers)
 	clang++ ${flags} -c -o $@ $<
 
-build: $(objs)
+arcl: $(objs)
 	clang++ ${flags} -fuse-ld=lld -o arcl ${objs} ${libs}
+build: arcl
 
 clean:
 	rm *.o arcl

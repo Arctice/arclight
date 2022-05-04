@@ -581,10 +581,11 @@ vec3f shading_frame::to_world(vec3f v) const {
     return bx * v.x + by * v.y + bz * v.z;
 }
 
-scatter_sample scatter(const scene&, const lambertian& matte,
-                       const intersection& isect, const vec3f& towards) {
+scatter_sample scatter(const scene&, sample_sequence* rng,
+                       const lambertian& matte, const intersection& isect,
+                       const vec3f& towards) {
     auto in = isect.shading.to_local(towards);
-    auto away = sample_cosine_hemisphere(sample_2d());
+    auto away = sample_cosine_hemisphere(rng->sample_2d());
     if (in.z < 0)
         away.z *= -1;
 
@@ -610,8 +611,8 @@ scatter_sample scatter(const scene&, const lambertian& matte,
     };
 }
 
-scatter_sample scatter(const scene&, const emissive&, const intersection&,
-                       const vec3f&) {
+scatter_sample scatter(const scene&, sample_sequence*, const emissive&,
+                       const intersection&, const vec3f&) {
     return scatter_sample{};
 }
 
@@ -658,9 +659,10 @@ scatter_sample scatter(const scene&, const blinn_phong& material,
                                isect.shading.to_local(away));
 }
 
-scatter_sample scatter(const scene&, const blinn_phong& material,
-                       const intersection& isect, const vec3f& towards) {
-    auto away = sample_cosine_hemisphere(sample_2d());
+scatter_sample scatter(const scene&, sample_sequence* rng,
+                       const blinn_phong& material, const intersection& isect,
+                       const vec3f& towards) {
+    auto away = sample_cosine_hemisphere(rng->sample_2d());
     return blinn_phong_forward(material, isect, towards, away);
 }
 
@@ -713,8 +715,9 @@ std::optional<vec3f> transmission_direction(const vec3f& in,
            normal * (refraction_ratio * cos_in - cos_out);
 }
 
-scatter_sample scatter(const scene&, const specular& material,
-                       const intersection& isect, const vec3f& towards) {
+scatter_sample scatter(const scene&, sample_sequence* rng,
+                       const specular& material, const intersection& isect,
+                       const vec3f& towards) {
     auto in = isect.shading.to_local(towards);
 
     auto air_refraction = light{1};
@@ -726,7 +729,7 @@ scatter_sample scatter(const scene&, const specular& material,
                                 absorption);
     auto F = (Fr.x + Fr.y + Fr.z) / 3;
 
-    if (sample_1d() < F or transmission_rate == 0) {
+    if (rng->sample_1d() < F or transmission_rate == 0) {
         auto away = vec3f{-in.x, -in.y, in.z};
         return scatter_sample{.value = Fr / std::abs(away.z),
                               .direction = isect.shading.to_world(away),
@@ -792,7 +795,7 @@ Float ggx_microfacet_geometry(Float roughness, Float a, Float b) {
 }
 
 // heitz 2018
-vec3f ggx_sample(Float alpha, vec3f v) {
+vec3f ggx_sample(sample_sequence* rng, Float alpha, vec3f v) {
     auto vh = vec3f{alpha * v.x, alpha * v.y, v.z}.normalized();
     if (vh.z < 0)
         vh.z *= -1;
@@ -801,7 +804,7 @@ vec3f ggx_sample(Float alpha, vec3f v) {
                                     : vec3f{1, 0, 0};
     auto T2 = vh.cross(T1);
 
-    auto [t1, t2] = sample_uniform_disk(sample_2d());
+    auto [t1, t2] = sample_uniform_disk(rng->sample_2d());
     auto s = (1 + vh.z) / 2;
     auto h = std::sqrt(1 - t1 * t1);
     t2 = (1 - s) * h + s * t2;
@@ -856,14 +859,16 @@ light glossy_reflection(const vec3f& towards, const vec3f& away,
     return F * D * G / (4 * std::abs(away.z) * std::abs(towards.z));
 }
 
-scatter_sample scatter(const scene&, const glossy& material,
-                       const intersection& isect, const vec3f& towards) {
+scatter_sample scatter(const scene&, sample_sequence* rng,
+                       const glossy& material, const intersection& isect,
+                       const vec3f& towards) {
     // auto away = sample_cosine_hemisphere(sample_2d());
     // auto angle_cos = away.z;
     // auto probability = std::abs(angle_cos) / π;
 
     auto in = isect.shading.to_local(towards).normalized();
-    auto facet = ggx_sample(sample_texture_1d(material.roughness, isect), in);
+    auto facet =
+        ggx_sample(rng, sample_texture_1d(material.roughness, isect), in);
     auto away = (in * -1) + facet * 2 * in.dot(facet);
 
     auto f = glossy_reflection(in, away,
@@ -905,8 +910,8 @@ scatter_sample scatter(const scene&, const glossy& material,
     };
 }
 
-scatter_sample scatter(const scene& scene, const intersection& isect,
-                       const vec3f& towards);
+scatter_sample scatter(const scene& scene, sample_sequence* rng,
+                       const intersection& isect, const vec3f& towards);
 scatter_sample scatter(const scene& scene, const intersection& isect,
                        const vec3f& towards, const vec3f& away);
 
@@ -914,8 +919,9 @@ scatter_sample scatter(const scene& scene, const mixed_material& mix,
                        const intersection& isect, const vec3f& towards,
                        const vec3f& away);
 
-scatter_sample scatter(const scene& scene, const mixed_material& mix,
-                       const intersection& isect, const vec3f& towards);
+scatter_sample scatter(const scene& scene, sample_sequence* rng,
+                       const mixed_material& mix, const intersection& isect,
+                       const vec3f& towards);
 scatter_sample scatter(const scene& scene, const mixed_material& mix,
                        const intersection& isect, const vec3f& towards,
                        const vec3f& away);
@@ -957,14 +963,15 @@ scatter_sample scatter(const scene& scene, const mixed_material& mix,
                    {});
 }
 
-scatter_sample scatter(const scene& scene, const mixed_material& mix,
-                       const intersection& isect, const vec3f& towards) {
+scatter_sample scatter(const scene& scene, sample_sequence* rng,
+                       const mixed_material& mix, const intersection& isect,
+                       const vec3f& towards) {
 
     auto scattering_source = std::clamp<int>(
-        (int)(sample_1d() * mix.layers.size()), 0, mix.layers.size() - 1);
+        (int)(rng->sample_1d() * mix.layers.size()), 0, mix.layers.size() - 1);
 
     auto scattering = std::visit(
-        [&](const auto& m) { return scatter(scene, m, isect, towards); },
+        [&](const auto& m) { return scatter(scene, rng, m, isect, towards); },
         *mix.layers[scattering_source].second);
     scattering.probability *= mix.layers[scattering_source].first;
     scattering.value *= mix.layers[scattering_source].first;
@@ -984,19 +991,19 @@ scatter_sample scatter(const scene& scene, const intersection& isect,
         return scatter(scene, lambertian{}, isect, towards, away);
 }
 
-scatter_sample scatter(const scene& scene, const intersection& isect,
-                       const vec3f& towards) {
+scatter_sample scatter(const scene& scene, sample_sequence* rng,
+                       const intersection& isect, const vec3f& towards) {
     if (isect.mat)
         return std::visit(
             [&](const auto& material) {
-                return scatter(scene, material, isect, towards);
+                return scatter(scene, rng, material, isect, towards);
             },
             *isect.mat);
     else
-        return scatter(scene, lambertian{}, isect, towards);
+        return scatter(scene, rng, lambertian{}, isect, towards);
 }
 
-light debug_trace(const scene& scene, ray r, int) {
+light debug_trace(const scene& scene, sample_sequence*, ray r, int) {
     auto intersection =
         intersect(scene.root, r, std::numeric_limits<Float>::max());
     if (not intersection)
@@ -1013,7 +1020,7 @@ ray offset_origin(const intersection& isect, ray r) {
     return r;
 }
 
-light naive_trace(const scene& scene, ray r, int depth) {
+light naive_trace(const scene& scene, sample_sequence* rng, ray r, int depth) {
     auto intersection =
         intersect(scene.root, r, std::numeric_limits<Float>::max());
     if (not intersection)
@@ -1026,7 +1033,7 @@ light naive_trace(const scene& scene, ray r, int depth) {
         return {};
 
     auto inorm = intersection->normal;
-    auto scatter_d = sample_uniform_direction(sample_2d()).normalized();
+    auto scatter_d = sample_uniform_direction(rng->sample_2d()).normalized();
     auto icos = std::abs(inorm.dot(scatter_d));
     auto pdf = 1 / (4 * π);
     auto f = scatter(scene, *intersection, r.direction * -1, scatter_d).value *
@@ -1039,28 +1046,32 @@ light naive_trace(const scene& scene, ray r, int depth) {
     auto scatter_ray =
         offset_origin(*intersection, ray{reflection_point, scatter_d});
 
-    auto Li = naive_trace(scene, scatter_ray, depth - 1);
+    auto Li = naive_trace(scene, rng, scatter_ray, depth - 1);
     return Li * f;
 }
 
-light scatter_trace(const scene& scene, ray r, int depth) {
+light scatter_trace(const scene& scene, sample_sequence* rng, ray r,
+                    int max_depth) {
     light beta{1};
     light L{};
+    int depth{0};
 
     while (true) {
         auto intersection =
             intersect(scene.root, r, std::numeric_limits<Float>::max());
         if (not intersection)
-            return {scene.film.global_radiance};
+            return light{scene.film.global_radiance} * beta;
 
         if (intersection->mat and is_emissive(intersection->mat)) {
             L += beta * emitted_light(*intersection);
         }
 
-        if (0 >= depth--)
+        if (max_depth <= depth)
             return L;
+        rng->skip_to(2 + depth * 2);
+        depth++;
 
-        auto scattering = scatter(scene, *intersection, r.direction * -1);
+        auto scattering = scatter(scene, rng, *intersection, r.direction * -1);
         if (scattering.value.length_sq() <= 0)
             return L;
 
@@ -1079,8 +1090,8 @@ light scatter_trace(const scene& scene, ray r, int depth) {
     return L;
 }
 
-std::pair<vec3f, Float> sample_sphere(const bounding_sphere& sphere,
-                                      vec3f point) {
+std::pair<vec3f, Float>
+sample_sphere(vec2f sample, const bounding_sphere& sphere, vec3f point) {
     auto disk_normal = (point - sphere.centre).normalized();
     auto disk_radius = sphere.radius;
     auto disk_centre = sphere.centre + disk_normal * disk_radius;
@@ -1090,24 +1101,25 @@ std::pair<vec3f, Float> sample_sphere(const bounding_sphere& sphere,
     // auto t0 = vec3f{-disk_normal.y, disk_normal.x, 0}.normalized();
     auto t1 = disk_normal.cross(t0).normalized();
 
-    auto cone_cos = (disk_centre - point).length() /
-                    (disk_centre + t0 * disk_radius - point).length();
+    auto disk_edge = (disk_centre + t0 * disk_radius - point);
+    auto cone_cos = (disk_normal * -1).dot(disk_edge) / disk_edge.length();
     auto direction =
-        sample_uniform_cone(cone_cos, t0, t1, disk_normal * -1).normalized();
+        sample_uniform_cone(sample, cone_cos, t0, t1, disk_normal * -1)
+            .normalized();
     auto probability = pdf_uniform_cone(cone_cos);
     return {direction, probability};
 }
 
 Float power_heuristic(Float f, Float g) { return (f * f) / (f * f + g * g); }
 
-scatter_sample sample_light(const scene& scene,
+scatter_sample sample_light(vec2f sample, const scene& scene,
                             const intersection& intersection,
                             const light_source& source, const ray& r) {
     auto intersection_point = r.distance(intersection.distance);
 
     auto& [light, light_bounds] = source;
     auto [light_direction, light_sample_pdf] =
-        sample_sphere(light_bounds, intersection_point);
+        sample_sphere(sample, light_bounds, intersection_point);
 
     auto light_probability = 1 / (light_sample_pdf * scene.lights.size());
 
@@ -1143,19 +1155,23 @@ scatter_sample sample_light(const scene& scene,
     };
 }
 
-scatter_sample sample_direct_lighting(const scene& scene,
+scatter_sample sample_direct_lighting(const scene& scene, sample_sequence* rng,
                                       const intersection& intersection,
                                       const ray& r) {
     if (scene.lights.empty())
         return {};
-    auto one_light = std::clamp<int>((int)(sample_1d() * scene.lights.size()),
-                                     0, scene.lights.size() - 1);
-    return sample_light(scene, intersection, scene.lights[one_light], r);
+    auto one_light =
+        std::clamp<int>((int)(rng->sample_1d() * scene.lights.size()), 0,
+                        scene.lights.size() - 1);
+    return sample_light(rng->sample_2d(), scene, intersection,
+                        scene.lights[one_light], r);
 }
 
-light path_trace(const scene& scene, ray r, int depth) {
+light path_trace(const scene& scene, sample_sequence* rng, ray r,
+                 int max_depth) {
     light beta{1};
     light L{};
+    int depth{0};
 
     ray prev_ray{r};
     std::optional<intersection> previous_intersection;
@@ -1179,7 +1195,7 @@ light path_trace(const scene& scene, ray r, int depth) {
                                        intersection->distance + gamma(32));
                     if (d and d->distance == intersection->distance) {
                         auto light_pdf =
-                            sample_light(scene, *previous_intersection,
+                            sample_light({}, scene, *previous_intersection,
                                          scene.lights[li], prev_ray)
                                 .probability;
                         Le *= power_heuristic(scattering_pdf, light_pdf);
@@ -1190,16 +1206,18 @@ light path_trace(const scene& scene, ray r, int depth) {
             }
         }
 
-        if (0 == depth--)
+        if (max_depth <= depth)
             break;
 
-        auto light = sample_direct_lighting(scene, *intersection, r);
+        auto light = sample_direct_lighting(scene, rng, *intersection, r);
         if (0 < light.value.length_sq()) {
             L += beta * light.value;
         }
+        rng->skip_to(2 + 3 + depth * 5);
 
         auto intersection_point = r.distance(intersection->distance);
-        auto scattering = scatter(scene, *intersection, r.direction * -1);
+        auto scattering = scatter(scene, rng, *intersection, r.direction * -1);
+        rng->skip_to(2 + 5 + depth * 5);
 
         auto icos = scattering.direction.dot(intersection->normal);
         auto reflected =
@@ -1217,12 +1235,13 @@ light path_trace(const scene& scene, ray r, int depth) {
         scattering_pdf = scattering.specular ? -1 : scattering.probability;
         prev_ray = r;
         r = scatter_ray;
+        depth++;
     }
 
     return L;
 }
 
-light light_trace(const scene& scene, ray r, int) {
+light light_trace(const scene& scene, sample_sequence* rng, ray r, int) {
     auto intersection =
         intersect(scene.root, r, std::numeric_limits<Float>::max());
     if (not intersection)
@@ -1233,7 +1252,7 @@ light light_trace(const scene& scene, ray r, int) {
     if (intersection->mat and is_emissive(intersection->mat))
         return emitted_light(*intersection);
 
-    auto Ld = sample_direct_lighting(scene, *intersection, r);
+    auto Ld = sample_direct_lighting(scene, rng, *intersection, r);
     return L + Ld.value;
 }
 
@@ -1267,10 +1286,10 @@ int main(int argc, char** argv) {
 
     auto scene = load_scene(*scene_path);
     auto resolution = scene.film.resolution;
-    fmt::print("loaded {}\n", *scene_path);
+    fmt::print("scene({}) ready\n", *scene_path);
 
     scene.lights = collect_lights(&scene.root);
-    fmt::print("{} lights\n", scene.lights.size());
+    fmt::print("lights({}) ready\n", scene.lights.size());
 
     auto trace = [&scene, debug]() {
         if (debug)
@@ -1280,6 +1299,14 @@ int main(int argc, char** argv) {
         case integrator::light: return light_trace;
         case integrator::scatter: return scatter_trace;
         case integrator::brute_force: return naive_trace;
+        }
+    }();
+
+    auto scene_sampler = [&scene]() {
+        switch (scene.film.sampler) {
+        case sampler::independent: return independent_sampler;
+        case sampler::stratified: return stratified_sampler;
+        case sampler::multi_stratified: return multi_stratified_sampler;
         }
     }();
 
@@ -1304,19 +1331,32 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::unordered_map<int, std::unique_ptr<pixel_sampler>> samplers;
+    for (int y = 0; y < resolution.y; ++y) {
+        for (int x = 0; x < resolution.x; ++x) {
+            auto px = vec2{x, y};
+            samplers.insert({y * resolution.x + x,
+                             scene_sampler(px, scene.film.supersampling)});
+        }
+    }
+    fmt::print("sampler ready\n");
+
     for (int s{}; s < scene.film.supersampling; ++s) {
 #pragma omp parallel for schedule(monotonic : dynamic)
         for (int y = 0; y < resolution.y; ++y) {
             for (int x = 0; x < resolution.x; ++x) {
+                auto px = vec2{x, y};
 
-                light light{NAN, NAN, NAN};
-                do {
-                    auto px = vec2{x, y};
-                    auto jitter = sample_2d();
-                    auto ray = scene.view.point(vec2f{px} + jitter);
-                    light = trace(scene, ray, scene.film.depth);
-                } while (std::isnan(light.x) or std::isnan(light.y) or
-                         std::isnan(light.z));
+                auto& sampler = samplers.at(y * resolution.x + x);
+                auto rng = sampler->nth_sample(s);
+
+                auto jitter = rng->sample_2d();
+                auto ray = scene.view.point(vec2f{px} + jitter);
+                auto light = trace(scene, rng.get(), ray, scene.film.depth);
+                if (std::isnan(light.x) or std::isnan(light.y) or
+                    std::isnan(light.z)) {
+                    continue;
+                }
 
                 auto px_offset = (y * resolution.x + x);
                 light_total[px_offset] += light;
@@ -1355,8 +1395,9 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
-// multithreaded deterministic rng
-// adaptive sampling, convergence metering
+// better image reconstruction
+// fixing mix materials
+// convergence metering
 // perspective camera
 // interactive preview
-// comparison tests
+

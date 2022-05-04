@@ -223,10 +223,20 @@ scene load_scene(std::string path) {
         throw std::runtime_error(
             fmt::format("bad integration method {}", method));
 
+    auto sampler = config["film"]["sampler"].value_or<std::string>("stratified");
+    if (sampler == "independent")
+        film.sampler = sampler::independent;
+    else if (sampler == "stratified")
+        film.sampler = sampler::stratified;
+    else if (sampler == "multi-stratified")
+        film.sampler = sampler::multi_stratified;
+    else
+        throw std::runtime_error(fmt::format("bad sampler {}", sampler));
+
     film.resolution = parse_vec2<int>(config["film"]["resolution"]);
     film.supersampling = config["film"]["supersampling"].value_or(8);
     film.depth = config["film"]["depth"].value_or(6);
-    film.global_radiance = config["film"]["global_radiance"].value_or<Float>(1);
+    film.global_radiance = config["film"]["global_radiance"].value_or<Float>(0);
 
     auto cam_config = config["camera"];
     auto cam_type = *cam_config["type"].value_exact<std::string>();
