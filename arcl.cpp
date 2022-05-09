@@ -724,17 +724,19 @@ scatter_sample scatter(const scene&, sample_sequence* rng,
     auto air_refraction = light{1};
     auto internal_refraction = sample_texture(material.refraction, isect);
     auto absorption = sample_texture(material.absorption, isect);
-    auto transmission_rate = sample_texture_1d(material.transmission, isect);
+    auto transmission_rate = sample_texture(material.transmission, isect);
 
     auto Fr = fresnel_conductor(in.z, air_refraction, internal_refraction,
                                 absorption);
     auto F = (Fr.x + Fr.y + Fr.z) / 3;
 
-    if (rng->sample_1d() < F or transmission_rate == 0) {
+    auto non_transmissive = transmission_rate.length_sq() == 0;
+
+    if (rng->sample_1d() < F or non_transmissive) {
         auto away = vec3f{-in.x, -in.y, in.z};
         return scatter_sample{.value = Fr / std::abs(away.z),
                               .direction = isect.shading.to_world(away),
-                              .probability = transmission_rate == 0 ? 1 : F,
+                              .probability = non_transmissive ? 1 : F,
                               .specular = true};
     }
 
@@ -746,7 +748,7 @@ scatter_sample scatter(const scene&, sample_sequence* rng,
     auto away = transmission_direction(
         in, vec3f{0, 0, (Float)(entering ? 1 : -1)}, refraction_ratio);
     if (not away)
-        return {.probability = 0};
+        return {.probability = {}};
 
     auto transmission = (light{1} - Fr) * transmission_rate;
     transmission *= refraction_ratio * refraction_ratio;
@@ -766,7 +768,7 @@ scatter_sample scatter(const scene&, const specular&, const intersection&,
     };
 }
 
-Float ggx_microfacet_area(Float roughness, Float a) {
+Float trowbridge_reitz_microfacet_area(Float roughness, Float a) {
     auto t = std::tan(a);
     auto t2 = t * t;
     if (std::isinf(t2))
@@ -775,7 +777,7 @@ Float ggx_microfacet_area(Float roughness, Float a) {
     return a2 / (π * std::pow(std::cos(a), 4) * std::pow(a2 + t2, 2));
 }
 
-Float ggx_microfacet_G1(Float roughness, Float a) {
+Float trowbridge_reitz_microfacet_G1(Float roughness, Float a) {
     auto t = std::tan(a);
     if (std::isinf(t))
         return 0;
@@ -785,18 +787,18 @@ Float ggx_microfacet_G1(Float roughness, Float a) {
     return 2 / (1 + D);
 }
 
-Float ggx_microfacet_lambda(Float roughness, Float a) {
-    return (1 / ggx_microfacet_G1(roughness, a)) - 1;
+Float trowbridge_reitz_microfacet_lambda(Float roughness, Float a) {
+    return (1 / trowbridge_reitz_microfacet_G1(roughness, a)) - 1;
 }
 
-Float ggx_microfacet_geometry(Float roughness, Float a, Float b) {
-    auto A = ggx_microfacet_lambda(roughness, a);
-    auto B = ggx_microfacet_lambda(roughness, b);
+Float trowbridge_reitz_microfacet_geometry(Float roughness, Float a, Float b) {
+    auto A = trowbridge_reitz_microfacet_lambda(roughness, a);
+    auto B = trowbridge_reitz_microfacet_lambda(roughness, b);
     return 1 / (1 + A + B);
 }
 
 // heitz 2018
-vec3f ggx_sample(sample_sequence* rng, Float alpha, vec3f v) {
+vec3f trowbridge_reitz_sample(sample_sequence* rng, Float alpha, vec3f v) {
     auto vh = vec3f{alpha * v.x, alpha * v.y, v.z}.normalized();
     if (vh.z < 0)
         vh.z *= -1;
@@ -816,9 +818,11 @@ vec3f ggx_sample(sample_sequence* rng, Float alpha, vec3f v) {
     return Ne.normalized();
 }
 
-Float ggx_sample_pdf(Float alpha, vec3f n, vec3f v) {
-    return ggx_microfacet_G1(alpha, std::acos(v.z)) / std::abs(v.z) *
-           ggx_microfacet_area(alpha, std::acos(n.z)) * std::abs(v.dot(n));
+Float trowbridge_reitz_sample_pdf(Float alpha, vec3f n, vec3f v) {
+    return trowbridge_reitz_microfacet_G1(alpha, std::acos(v.z)) /
+           std::abs(v.z) *
+           trowbridge_reitz_microfacet_area(alpha, std::acos(n.z)) *
+           std::abs(v.dot(n));
 }
 
 Float beckmann_microfacet_area(Float roughness, Float a) {
@@ -851,8 +855,8 @@ light glossy_reflection(const vec3f& towards, const vec3f& away,
 
     auto F = fresnel_conductor(std::abs(towards.dot(halfv)), {1}, eta, k);
 
-    auto D = ggx_microfacet_area(roughness, h);
-    auto G = ggx_microfacet_geometry(roughness, a, b);
+    auto D = trowbridge_reitz_microfacet_area(roughness, h);
+    auto G = trowbridge_reitz_microfacet_geometry(roughness, a, b);
 
     // auto D = beckmann_microfacet_area(roughness, h);
     // auto G = beckmann_microfacet_geometry(roughness, a, b);
@@ -863,13 +867,17 @@ light glossy_reflection(const vec3f& towards, const vec3f& away,
 scatter_sample scatter(const scene&, sample_sequence* rng,
                        const glossy& material, const intersection& isect,
                        const vec3f& towards) {
-    // auto away = sample_cosine_hemisphere(sample_2d());
+    // auto away = sample_cosine_hemisphere(rng->sample_2d());
     // auto angle_cos = away.z;
     // auto probability = std::abs(angle_cos) / π;
 
     auto in = isect.shading.to_local(towards).normalized();
-    auto facet =
-        ggx_sample(rng, sample_texture_1d(material.roughness, isect), in);
+    auto inside = in.z < 0;
+    if (inside)
+        in.z *= -1;
+
+    auto facet = trowbridge_reitz_sample(
+        rng, sample_texture_1d(material.roughness, isect), in);
     auto away = (in * -1) + facet * 2 * in.dot(facet);
 
     auto f = glossy_reflection(in, away,
@@ -877,9 +885,12 @@ scatter_sample scatter(const scene&, sample_sequence* rng,
                                sample_texture(material.refraction, isect),
                                sample_texture(material.absorption, isect));
     auto probability =
-        ggx_sample_pdf(sample_texture_1d(material.roughness, isect), facet,
-                       in) /
+        trowbridge_reitz_sample_pdf(
+            sample_texture_1d(material.roughness, isect), facet, in) /
         (4 * std::abs(in.dot(facet)));
+
+    if (inside)
+        away.z *= -1;
 
     return scatter_sample{
         .value = f,
@@ -895,8 +906,8 @@ scatter_sample scatter(const scene&, const glossy& material,
     auto in = isect.shading.to_local(towards).normalized();
     auto facet = (away + in).normalized();
     auto probability =
-        ggx_sample_pdf(sample_texture_1d(material.roughness, isect), facet,
-                       in) /
+        trowbridge_reitz_sample_pdf(
+            sample_texture_1d(material.roughness, isect), facet, in) /
         (4 * std::abs(in.dot(facet)));
     auto f = same_shading_hemisphere(in, away)
                  ? glossy_reflection(
@@ -1239,6 +1250,14 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
         prev_ray = r;
         r = scatter_ray;
         depth++;
+
+        auto best = std::max(beta.x, std::max(beta.y, beta.z));
+        if (depth < 2 or best > 0.06)
+            continue;
+        auto q = std::clamp<Float>(1 - best, 0, 0.8);
+        if (rng->sample_1d() < q)
+            break;
+        beta /= (1 - q);
     }
 
     return L;
