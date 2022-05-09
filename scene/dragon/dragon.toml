@@ -24,12 +24,6 @@ roughness = 0.1
 refraction = [0.271, 0.677, 1.316]
 absorption = [3.61, 2.62, 2.29]
 
-[material.glass]
-type = "specular"
-absorption = [0, 0, 0]
-refraction = [1.6, 1.6, 1.6]
-transmission = [1, 1, 1]
-
 [model.dragon]
 file = "dragon.ply"
 

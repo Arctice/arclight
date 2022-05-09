@@ -6,9 +6,22 @@
 #include <array>
 #include <queue>
 #include <chrono>
+#include <mutex>
 
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
+
+Float gamma_correct(Float value) {
+    if (value <= (Float)0.0031308)
+        return Float(12.92) * value;
+    return Float(1.055) * std::pow(value, 1 / (Float)2.4) - (Float)0.055;
+}
+
+Float inverse_gamma_correct(Float value) {
+    if (value <= (Float)0.04045)
+        return value * 1 / (Float)12.92;
+    return std::pow((value + 0.055f) * 1 / (Float)1.055, (Float)2.4);
+}
 
 light sample_texture(const uv_texture&, const intersection& isect) {
     return {isect.uv.x, isect.uv.y, 0};
@@ -29,18 +42,6 @@ light sample_texture(const Float& constant, const intersection&) {
 
 light sample_texture(const light& constant, const intersection&) {
     return constant;
-}
-
-Float gamma_correct(Float value) {
-    if (value <= (Float)0.0031308)
-        return Float(12.92) * value;
-    return Float(1.055) * std::pow(value, 1 / (Float)2.4) - (Float)0.055;
-}
-
-Float inverse_gamma_correct(Float value) {
-    if (value <= (Float)0.04045)
-        return value * 1 / (Float)12.92;
-    return std::pow((value + 0.055f) * 1 / (Float)1.055, (Float)2.4);
 }
 
 light sample_texture(const image_texture& tex, const intersection& isect) {
@@ -1227,6 +1228,8 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
 
         if (beta.length_sq() <= 0)
             break;
+        if (std::isnan(beta.y))
+            return L;
 
         auto scatter_ray = offset_origin(
             *intersection, ray{intersection_point, scattering.direction});
@@ -1261,6 +1264,90 @@ vec3f light_to_rgb(light light) {
             std::clamp<Float>(gamma_correct(light.y), 0, 1),
             std::clamp<Float>(gamma_correct(light.z), 0, 1)};
 }
+
+constexpr int ceil(Float f) {
+    const int l = static_cast<int>(f);
+    return (f > l) ? l + 1 : l;
+}
+
+Float gaussian(Float a, Float r, Float x2) {
+    constexpr Float inv_pi = 0.318309886184;
+    return a * inv_pi *
+           std::max<Float>(0, std::exp(-(x2 * a)) - std::exp(-(r * r * a)));
+}
+
+struct image {
+    image(vec2<int> resolution) : resolution(resolution) {
+        light.resize(resolution.x * resolution.y);
+        partial_image.resize(3 * resolution.y * resolution.x);
+    }
+
+    void set_supersampling(int ss) { supersampling = ss; }
+
+    bool gaussian_filter{true};
+    static constexpr Float alpha{3};
+    static constexpr Float filter_radius{1.5};
+    static constexpr int max_offset{ceil(filter_radius)};
+
+    void add_sample(const vec2f& position, const light& value) {
+        auto px = vec2<int>{position};
+
+        if (not gaussian_filter) {
+            auto [x, y] = px;
+            auto offset = (y * resolution.x + x);
+            auto lock = std::lock_guard{update_mutex};
+            light[offset] += value;
+            auto [r, g, b] = light[offset] / supersampling;
+            offset *= 3;
+            partial_image[offset + 0] = r;
+            partial_image[offset + 1] = g;
+            partial_image[offset + 2] = b;
+            return;
+        }
+
+        constexpr auto tile_size = max_offset * 2 + 1;
+        ::light update[tile_size][tile_size]{};
+        auto hlines = vec2<int>{std::max(-max_offset, -px.y),
+                                std::min(max_offset, resolution.y - px.y)};
+        auto vlines = vec2<int>{std::max(-max_offset, -px.x),
+                                std::min(max_offset, resolution.x - px.x)};
+        for (int yd{hlines.x}; yd < hlines.y; ++yd) {
+            for (int xd{vlines.x}; xd < vlines.y; ++xd) {
+                int y = px.y + yd;
+                int x = px.x + xd;
+
+                for (int c{}; c < 3; ++c) {
+                    auto p = vec2f{x + (Float)0.5, y + (Float)0.5} +
+                             vec2f{1 / (Float)3, 0} * (c - 1);
+                    auto d = (position - p).length_sq();
+                    auto f = gaussian(alpha, filter_radius, d);
+                    update[yd + max_offset][xd + max_offset][c] += value[c] * f;
+                }
+            }
+        }
+
+        auto lock = std::lock_guard{update_mutex};
+        for (int yd{hlines.x}; yd < hlines.y; ++yd) {
+            for (int xd{vlines.x}; xd < vlines.y; ++xd) {
+                int y = px.y + yd;
+                int x = px.x + xd;
+                auto offset = (y * resolution.x + x);
+                light[offset] += update[yd + max_offset][xd + max_offset];
+                auto [r, g, b] = light[offset] / supersampling;
+                offset *= 3;
+                partial_image[offset + 0] = r;
+                partial_image[offset + 1] = g;
+                partial_image[offset + 2] = b;
+            }
+        }
+    }
+
+    std::mutex update_mutex{};
+    vec2<int> resolution;
+    int supersampling;
+    std::vector<light> light;
+    std::vector<float> partial_image;
+};
 
 int main(int argc, char** argv) {
     auto scene_path = [argc, argv]() -> std::optional<std::string> {
@@ -1310,11 +1397,6 @@ int main(int argc, char** argv) {
         }
     }();
 
-    std::vector<light> light_total{};
-    std::vector<float> image;
-    light_total.resize(resolution.x * resolution.y);
-    image.resize(3 * resolution.y * resolution.x);
-
     auto tev = std::optional<ipc::tev>{};
     auto ipc_name =
         *scene_path +
@@ -1341,43 +1423,41 @@ int main(int argc, char** argv) {
     }
     fmt::print("sampler ready\n");
 
+    image image{resolution};
+
     for (int s{}; s < scene.film.supersampling; ++s) {
+        image.set_supersampling(s + 1);
 #pragma omp parallel for schedule(monotonic : dynamic)
         for (int y = 0; y < resolution.y; ++y) {
             for (int x = 0; x < resolution.x; ++x) {
-                auto px = vec2{x, y};
 
                 auto& sampler = samplers.at(y * resolution.x + x);
                 auto rng = sampler->nth_sample(s);
 
+                auto px = vec2{x, y};
                 auto jitter = rng->sample_2d();
-                auto ray = scene.view.point(vec2f{px} + jitter);
+                auto point = vec2f{px} + jitter;
+
+                auto ray = scene.view.point(point);
                 auto light = trace(scene, rng.get(), ray, scene.film.depth);
-                if (std::isnan(light.x) or std::isnan(light.y) or
-                    std::isnan(light.z)) {
+
+                if (std::isnan(light.x) or std::isnan(light.x) or
+                    std::isnan(light.y) or std::isinf(light.y) or
+                    std::isinf(light.z) or std::isinf(light.z))
                     continue;
-                }
-
-                auto px_offset = (y * resolution.x + x);
-                light_total[px_offset] += light;
-
-                auto [r, g, b] = light_total[px_offset] / (s + 1);
-                px_offset *= 3;
-                image[px_offset + 0] = r;
-                image[px_offset + 1] = g;
-                image[px_offset + 2] = b;
+                image.add_sample(point, light);
             }
         }
 
         if (tev)
             tev->update_rgb_image(ipc_name, 0, 0, resolution.x, resolution.y,
-                                  image);
+                                  image.partial_image);
     }
 
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
     for (int px = 0; px < resolution.y * resolution.x; ++px) {
-        auto light = light_total[px] / scene.film.supersampling;
+        auto light = image.light[px] / scene.film.supersampling;
         auto [r, g, b] = light_to_rgb(light);
         out[px * 4 + 0] = r * 255;
         out[px * 4 + 1] = g * 255;
@@ -1395,9 +1475,9 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
-// better image reconstruction
 // fixing mix materials
 // convergence metering
 // perspective camera
 // interactive preview
 
+// diffuse/glossy transmission

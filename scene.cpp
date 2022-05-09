@@ -10,6 +10,11 @@ template <class T, class N> auto parse_vec2(const toml::node_view<N>& v) {
 }
 
 template <class T, class N> auto parse_vec3(const toml::node_view<N>& v) {
+    if (v.is_number())
+        return vec3<T>{*v.template value<T>()};
+    if(not v[0].is_number()){
+        fmt::print("warn: couldn't parse vector at {}\n", v.node()->source());
+    }
     return vec3<T>{*v[0].template value<T>(), *v[1].template value<T>(),
                    *v[2].template value<T>()};
 }
@@ -188,6 +193,7 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
         if (nt.contains("transform") and nt["transform"].is_array())
             transform = parse_transform(*nt.at("transform").as_array());
         auto instance_of = *nt["instance"].value<std::string>();
+        assert(context.nodes.contains(instance_of));
         return {instance(transform, context.nodes.at(instance_of)), material};
     }
 
@@ -223,7 +229,8 @@ scene load_scene(std::string path) {
         throw std::runtime_error(
             fmt::format("bad integration method {}", method));
 
-    auto sampler = config["film"]["sampler"].value_or<std::string>("stratified");
+    auto sampler =
+        config["film"]["sampler"].value_or<std::string>("stratified");
     if (sampler == "independent")
         film.sampler = sampler::independent;
     else if (sampler == "stratified")
