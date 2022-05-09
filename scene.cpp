@@ -243,7 +243,7 @@ scene load_scene(std::string path) {
     film.resolution = parse_vec2<int>(config["film"]["resolution"]);
     film.supersampling = config["film"]["supersampling"].value_or(8);
     film.depth = config["film"]["depth"].value_or(6);
-    film.global_radiance = config["film"]["global_radiance"].value_or<Float>(0);
+    film.global_radiance = parse_vec3<Float>(config["film"]["global_radiance"]);
 
     auto cam_config = config["camera"];
     auto cam_type = *cam_config["type"].value_exact<std::string>();

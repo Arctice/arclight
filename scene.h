@@ -61,6 +61,7 @@ struct ray {
 
 struct shading_frame {
     vec3f dpdu, dpdv;
+    vec3f normal;
 
     vec3f to_local(vec3f) const;
     vec3f to_world(vec3f) const;
@@ -410,7 +411,7 @@ struct film {
     vec2<int> resolution;
     int supersampling;
     int depth;
-    Float global_radiance;
+    vec3f global_radiance;
 };
 
 struct bounding_sphere {

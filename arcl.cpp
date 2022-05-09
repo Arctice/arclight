@@ -321,6 +321,7 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r,
         hit->normal = Ti.normal(hit->normal).normalized();
         hit->shading.dpdu = i.T.vector(hit->shading.dpdu);
         hit->shading.dpdv = i.T.vector(hit->shading.dpdv);
+        hit->shading.normal = Ti.normal(hit->shading.normal).normalized();
     }
     return hit;
 }
@@ -462,16 +463,35 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
         W = W / det;
 
         auto n = dpdu.cross(dpdv).normalized();
+        auto ns = n;
+
+        if (not tri.mesh->normals.empty()) {
+            ns = (tri.mesh->normals[tri.vertices.x] * U +
+                  tri.mesh->normals[tri.vertices.y] * V +
+                  tri.mesh->normals[tri.vertices.z] * W);
+            if (ns.length_sq() > 0)
+                ns = ns.normalized();
+            else
+                ns = n;
+
+            auto Z = dpdu.cross(ns).normalized();
+            auto S = Z.cross(ns);
+            dpdu = Z;
+            dpdv = S;
+        }
+
+        auto isect_uv = (uv[0] * U + uv[1] * V + uv[2] * W);
+        if (not tri.mesh->tex_coords.empty()) {
+            isect_uv = (tri.mesh->tex_coords[tri.vertices.x] * U +
+                        tri.mesh->tex_coords[tri.vertices.y] * V +
+                        tri.mesh->tex_coords[tri.vertices.z] * W);
+        }
 
         return intersection{
             .distance = t,
-            .normal = n,
-            .uv = tri.mesh->normals.empty()
-                      ? (uv[0] * U + uv[1] * V + uv[2] * W)
-                      : (tri.mesh->tex_coords[tri.vertices.x] * U +
-                         tri.mesh->tex_coords[tri.vertices.y] * V +
-                         tri.mesh->tex_coords[tri.vertices.z] * W),
-            .shading = {dpdu, dpdv},
+            .normal = ns,
+            .uv = isect_uv,
+            .shading = {dpdu, dpdv, ns},
         };
     }
 }
@@ -567,7 +587,7 @@ struct scatter_sample {
 };
 
 vec3f shading_frame::to_local(vec3f v) const {
-    auto surface_normal = dpdu.cross(dpdv).normalized();
+    auto surface_normal = this->normal;
     auto bz = surface_normal;
     auto bx = dpdu.normalized();
     auto by = bz.cross(bx);
@@ -575,7 +595,7 @@ vec3f shading_frame::to_local(vec3f v) const {
 }
 
 vec3f shading_frame::to_world(vec3f v) const {
-    auto surface_normal = dpdu.cross(dpdv).normalized();
+    auto surface_normal = this->normal;
     auto bz = surface_normal;
     auto bx = dpdu.normalized();
     auto by = bz.cross(bx);
