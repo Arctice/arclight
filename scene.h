@@ -8,14 +8,26 @@
 
 using light = vec3f;
 
+
+struct uv_texture;
+struct checkerboard_texture;
+struct product_texture;
+struct image_texture;
+using texture =
+    std::variant<Float, light, uv_texture, checkerboard_texture, product_texture, image_texture>;
+
 struct uv_texture {};
+
 struct checkerboard_texture {};
+
+struct product_texture {
+    std::shared_ptr<texture> A;
+    std::shared_ptr<texture> B;
+};
+
 struct image_texture {
     sf::Image* img;
 };
-
-using texture =
-    std::variant<Float, light, uv_texture, checkerboard_texture, image_texture>;
 
 struct emissive {
     texture value{light{1}};

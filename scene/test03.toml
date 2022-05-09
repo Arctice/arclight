@@ -70,6 +70,7 @@ instance = "node.item"
 type = "specular"
 refraction = [10, 10, 10]
 absorption = [0.1, 0.1, 0.1]
+transmission = [1, 1, 1]
 
 [[world]]
 material = "mirror"
@@ -88,10 +89,11 @@ transform = [["translate", [1, 2, 0]]]
 instance = "node.item"
 
 [material.diamond]
-type = "glossy"
+type = "specular"
 roughness = 0.4
 refraction = [2.4, 2.4, 2.4]
 absorption = [0, 0, 0]
+transmission = [1, 1, 1]
 
 [[world]]
 material = "diamond"
@@ -121,22 +123,27 @@ transform = [["translate", [2, 1, 0]]]
 instance = "node.item"
 
 [material.plastic-gloss]
-type = "glossy"
-roughness = 0.1
-refraction = [0.4, 0.4, 0.4]
+type = "specular"
 absorption = [0, 0, 0]
+refraction = [0.4, 0.4, 0.4]
+transmission = [1, 1, 1]
 
 [[world]]
 material = "plastic-gloss"
 transform = [["translate", [1, 1, 0]]]
 instance = "node.item"
 
+[material.glass]
+type = "specular"
+absorption = [0, 0, 0]
+refraction = [1.5, 1.5, 1.5]
+transmission = [1, 1, 1]
+
 [material.plastic]
 type = "mix"
-layers = [["plastic-diffuse", 1], ["plastic-gloss", 1]]
+layers = [["glass", 1], ["plastic-diffuse", 1]]
 
 [[world]]
 material = "plastic"
 transform = [["translate", [0, 1, 0]]]
 instance = "node.item"
-

@@ -56,6 +56,11 @@ light sample_texture(const image_texture& tex, const intersection& isect) {
             inverse_gamma_correct(sfc.b / (Float)255)};
 }
 
+light sample_texture(const texture& tex, const intersection& isect);
+light sample_texture(const product_texture& tex, const intersection& isect) {
+    return sample_texture(*tex.A, isect) * sample_texture(*tex.B, isect);
+}
+
 light sample_texture(const texture& tex, const intersection& isect) {
     return std::visit(
         [&isect](auto& tex) { return sample_texture(tex, isect); }, tex);

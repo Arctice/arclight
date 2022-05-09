@@ -20,6 +20,7 @@ template <class T, class N> auto parse_vec3(const toml::node_view<N>& v) {
 }
 
 struct scene_load_context {
+    toml::table* description{};
     std::filesystem::path scene_root;
     std::unordered_map<std::string, node> nodes;
     std::unordered_map<std::string, std::unique_ptr<material>> materials;
@@ -54,6 +55,9 @@ transform parse_transform(const toml::array& ts) {
     return T;
 }
 
+template <class N>
+texture parse_texture(scene_load_context& context, const toml::node_view<N>& v);
+
 void parse_texture_definition(scene_load_context& context,
                               const std::string& name, const toml::table& v) {
     auto type = *v["type"].template value<std::string>();
@@ -63,6 +67,14 @@ void parse_texture_definition(scene_load_context& context,
         context.images[name].loadFromFile(context.scene_root /
                                           std::filesystem::path{file});
         context.textures[name] = image_texture{&context.images[name]};
+    }
+    else if (type == "product") {
+        auto A{std::make_shared<texture>(Float{1})};
+        *A = parse_texture(context, v["A"]);
+
+        auto B{std::make_shared<texture>(Float{1})};
+        *B = parse_texture(context, v["B"]);
+        context.textures[name] = product_texture{std::move(A), std::move(B)};
     }
     else if (type == "uv") {
         context.textures[name] = uv_texture{};
@@ -78,18 +90,31 @@ void parse_texture_definition(scene_load_context& context,
 template <class N> texture parse_texture(scene_load_context& context,
                                          const toml::node_view<N>& v) {
     if (v.is_string()) {
+        auto name = **v.as_string();
         try {
-            return context.textures.at(**v.as_string());
+            return context.textures.at(name);
         }
         catch (const std::out_of_range&) {
-            throw std::runtime_error(
-                fmt::format("missing texture {}", **v.as_string()));
+            auto textures = context.description->at("texture").as_table();
+            if (textures and textures->contains(name)) {
+                parse_texture_definition(context, name,
+                                         *textures->at(name).as_table());
+                assert(context.textures.contains(name));
+                return context.textures.at(name);
+            }
+            else
+                throw std::runtime_error(
+                    fmt::format("missing texture {}", **v.as_string()));
         }
     }
     else if (v.is_array())
         return parse_vec3<Float>(v);
-    else
+    else if (v.is_number())
         return *v.template value<Float>();
+    else {
+        fmt::print("warn: couldn't parse texture at {}\n", v.node()->source());
+        return {0};
+    }
 }
 
 material* parse_material(scene_load_context& context,
@@ -165,8 +190,9 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
 
     material* material{};
     if (nt.contains("material")) {
-        material =
-            context.materials.at(*nt["material"].value<std::string>()).get();
+        auto name = *nt["material"].value<std::string>();
+        assert(context.materials.contains(name));
+        material = context.materials.at(name).get();
     }
 
     if (nt.contains("group")) {
@@ -214,6 +240,7 @@ scene load_scene(std::string path) {
     context.scene_root = std::filesystem::path{path}.remove_filename();
 
     auto config = toml::parse_file(path);
+    context.description = &config;
 
     film film{};
     auto method = config["film"]["method"].value_or<std::string>("path");
