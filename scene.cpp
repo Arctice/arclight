@@ -161,28 +161,30 @@ material* parse_material(scene_load_context& context,
             emissive{.value = parse_texture(context, nt["light"])});
     }
 
-    else if (type == "mix") {
-        mixed_material mix{};
-
-        auto layers = *nt.at("layers").as_array();
-        for (auto& e : layers) {
-            auto layer = *e.as_array();
-            auto name = layer[0].value<std::string>();
-            auto weight = *toml::node_view(layer[1]).value<Float>();
-
+    else if (type == "coat") {
+        coated coat{};
+        assert(nt.contains("coat"));
+        assert(nt.contains("base"));
+        assert(nt.contains("weight"));
+        auto coat_name = nt["coat"].value<std::string>();
+        auto base_name = nt["base"].value<std::string>();
+        for (auto& name : {coat_name, base_name}) {
             if (not context.materials.contains(*name))
                 parse_material(context, material_table, *name,
                                *material_table[*name].as_table());
-
-            mix.layers.push_back({weight, context.materials.at(*name).get()});
+            assert(context.materials.contains(*name));
         }
 
-        context.materials[name] = std::make_unique<material>(std::move(mix));
+        coat.weight = parse_texture(context, nt["weight"]);
+        coat.coat = context.materials.at(*coat_name).get();
+        coat.base = context.materials.at(*base_name).get();
+        context.materials[name] = std::make_unique<material>(std::move(coat));
     }
 
     else
         throw std::runtime_error(fmt::format("bad material type {}", type));
 
+    assert(context.materials.contains(name));
     return context.materials.at(name).get();
 }
 

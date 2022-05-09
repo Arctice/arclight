@@ -3,6 +3,7 @@
 resolution = [100, 100]
 depth = 3
 supersampling = 1
+global_radiance = 1
 
 [camera]
 type = "orthographic"

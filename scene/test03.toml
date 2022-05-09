@@ -140,8 +140,11 @@ refraction = [1.5, 1.5, 1.5]
 transmission = [1, 1, 1]
 
 [material.plastic]
-type = "mix"
-layers = [["glass", 1], ["plastic-diffuse", 1]]
+type = "coat"
+weight = 1
+coat = "glass"
+base = "plastic-diffuse"
+
 
 [[world]]
 material = "plastic"

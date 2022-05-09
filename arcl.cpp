@@ -589,6 +589,7 @@ struct scatter_sample {
     vec3f direction;
     Float probability{};
     bool specular{false};
+    light next_medium_refraction{1};
 };
 
 vec3f shading_frame::to_local(vec3f v) const {
@@ -606,6 +607,15 @@ vec3f shading_frame::to_world(vec3f v) const {
     auto by = bz.cross(bx);
     return bx * v.x + by * v.y + bz * v.z;
 }
+
+scatter_sample scatter(const scene&, sample_sequence*, const material&,
+                       const intersection&, const vec3f& towards);
+scatter_sample scatter(const scene&, const material&, const intersection&,
+                       const vec3f& towards, const vec3f& from);
+scatter_sample scatter(const scene&, sample_sequence*, const intersection&,
+                       const vec3f& towards);
+scatter_sample scatter(const scene&, const intersection&, const vec3f& towards,
+                       const vec3f& from);
 
 scatter_sample scatter(const scene&, sample_sequence* rng,
                        const lambertian& matte, const intersection& isect,
@@ -781,7 +791,8 @@ scatter_sample scatter(const scene&, sample_sequence* rng,
     return scatter_sample{.value = transmission / std::abs(away->z),
                           .direction = isect.shading.to_world(*away),
                           .probability = 1 - F,
-                          .specular = true};
+                          .specular = true,
+                          .next_medium_refraction = refraction_to};
 }
 
 scatter_sample scatter(const scene&, const specular&, const intersection&,
@@ -947,95 +958,163 @@ scatter_sample scatter(const scene&, const glossy& material,
     };
 }
 
+scatter_sample coat_scatter(const scene& scene, sample_sequence* rng,
+                            const coated& mat, const intersection& isect,
+                            const vec3f& towards) {
+    auto first = scatter(scene, rng, *mat.coat, isect, towards);
+    auto coat_refraction = isect.shading.to_local(first.direction);
+    if (coat_refraction.z >= 0)
+        return first;
+
+    auto second = scatter(scene, rng, *mat.base, isect, first.direction * -1);
+    auto base_refraction = isect.shading.to_local(second.direction);
+    if (base_refraction.z < 0)
+        return {.direction = second.direction};
+
+    auto next = coat_scatter(scene, rng, mat, isect, second.direction * -1);
+    next.value *= std::abs(coat_refraction.z) * std::abs(base_refraction.z);
+
+    return {.value = first.value * second.value * next.value,
+            .direction = next.direction,
+            .probability =
+                first.probability * second.probability * next.probability,
+            .specular = second.specular && first.specular};
+}
+
 scatter_sample scatter(const scene& scene, sample_sequence* rng,
-                       const intersection& isect, const vec3f& towards);
-scatter_sample scatter(const scene& scene, const intersection& isect,
-                       const vec3f& towards, const vec3f& away);
+                       const coated& mat, const intersection& isect,
+                       vec3f towards) {
+    auto skip_coating =
+        rng->sample_1d() < (1 - sample_texture_1d(mat.weight, isect));
+    if (skip_coating)
+        return scatter(scene, rng, *mat.base, isect, towards);
 
-scatter_sample scatter(const scene& scene, const mixed_material& mix,
-                       const intersection& isect, const vec3f& towards,
-                       const vec3f& away);
+    auto outgoing = isect.shading.to_local(towards);
+    auto inside = outgoing.z < 0;
 
-scatter_sample scatter(const scene& scene, sample_sequence* rng,
-                       const mixed_material& mix, const intersection& isect,
-                       const vec3f& towards);
-scatter_sample scatter(const scene& scene, const mixed_material& mix,
-                       const intersection& isect, const vec3f& towards,
-                       const vec3f& away);
-
-scatter_sample scatter(const scene& scene, const mixed_material& mix,
-                       const intersection& isect, const vec3f& towards,
-                       scatter_sample scattering,
-                       std::optional<int> scattering_source) {
-    vec3f away = scattering.direction;
-
-    Float total_weight{};
-    for (int i{}; i < (int)mix.layers.size(); ++i) {
-        auto [weight, layer] = mix.layers[i];
-        total_weight += weight;
-
-        if (i == scattering_source)
-            continue;
-
-        auto s = std::visit(
-            [&](const auto& m) {
-                return scatter(scene, m, isect, towards, away);
-            },
-            *layer);
-
-        scattering.probability += s.probability * weight;
-        scattering.value += s.value * weight;
+    if (inside) {
+        outgoing.z *= -1;
+        towards = isect.shading.to_world(outgoing);
     }
 
-    scattering.probability /= total_weight;
-    scattering.value /= total_weight;
+    auto scattering = coat_scatter(scene, rng, mat, isect, towards);
+
+    if (inside) {
+        scattering.direction -=
+            isect.normal * 2 * isect.normal.dot(scattering.direction);
+    }
 
     return scattering;
 }
 
-scatter_sample scatter(const scene& scene, const mixed_material& mix,
+scatter_sample scatter(const scene& scene, const coated& mat,
                        const intersection& isect, const vec3f& towards,
-                       const vec3f& away) {
-    return scatter(scene, mix, isect, towards, scatter_sample{{}, away, {}},
-                   {});
+                       const vec3f& from) {
+    static thread_local auto local_rng = independent_sampler({}, {});
+    auto ss = local_rng->nth_sample({});
+    auto rng = ss.get();
+
+    auto skip_coating =
+        rng->sample_1d() < (1 - sample_texture_1d(mat.weight, isect));
+    if (skip_coating)
+        return scatter(scene, *mat.base, isect, towards, from);
+
+    // Position-Free Monte Carlo Simulation for Arbitrary Layered BSDFs
+    // https://shuangz.com/projects/layered-sa18/
+
+    light L{0};
+
+    auto forward = scatter(scene, rng, *mat.coat, isect, towards);
+    auto v_forward = isect.shading.to_local(forward.direction);
+    if (v_forward.z >= 0 or not forward.probability)
+        return {};
+
+    auto reverse = scatter(scene, rng, *mat.coat, isect, from);
+    auto v_reverse = isect.shading.to_local(reverse.direction);
+    if (v_reverse.z >= 0 or not reverse.probability)
+        return {};
+    // veach(1996) symmetry adjustment
+    reverse.value *=
+        reverse.next_medium_refraction * reverse.next_medium_refraction;
+
+    auto approximate_pdf =
+        scatter(scene, *mat.base, isect, forward.direction * -1,
+                reverse.direction * -1)
+            .probability;
+    approximate_pdf = (0.1 * (1 / (4 * π))) + (0.9 * approximate_pdf);
+
+    enum class side { coat, base } layer{side::base};
+    auto direction{forward.direction};
+    auto beta{forward.value * std::abs(v_forward.z) / forward.probability};
+
+    for (int depth{0}; depth < 5; ++depth) {
+        if (layer == side::base) {
+            auto internal = scatter(scene, *mat.base, isect, direction * -1,
+                                    reverse.direction * -1);
+            L += beta * internal.value * std::abs(v_reverse.z) *
+                 (reverse.value / reverse.probability);
+
+            auto next = scatter(scene, rng, *mat.base, isect, direction * -1);
+            auto v_next = isect.shading.to_local(next.direction);
+            if (v_next.z < 0 or not next.probability)
+                break;
+
+            direction = next.direction;
+            beta *= next.value * std::abs(v_next.z) / next.probability;
+            layer = side::coat;
+        }
+
+        else {
+            auto next = scatter(scene, rng, *mat.coat, isect, direction * -1);
+            auto v_next = isect.shading.to_local(next.direction);
+            if (v_next.z >= 0 or not next.probability)
+                break;
+            direction = next.direction;
+            beta *= next.value * std::abs(v_next.z) / next.probability;
+            layer = side::base;
+        }
+    }
+
+    return scatter_sample{
+        .value = L,
+        .direction = from,
+        .probability = approximate_pdf,
+        .specular = false,
+    };
 }
 
 scatter_sample scatter(const scene& scene, sample_sequence* rng,
-                       const mixed_material& mix, const intersection& isect,
+                       const material& material, const intersection& isect,
                        const vec3f& towards) {
+    return std::visit(
+        [&](const auto& material) {
+            return scatter(scene, rng, material, isect, towards);
+        },
+        material);
+}
 
-    auto scattering_source = std::clamp<int>(
-        (int)(rng->sample_1d() * mix.layers.size()), 0, mix.layers.size() - 1);
-
-    auto scattering = std::visit(
-        [&](const auto& m) { return scatter(scene, rng, m, isect, towards); },
-        *mix.layers[scattering_source].second);
-    scattering.probability *= mix.layers[scattering_source].first;
-    scattering.value *= mix.layers[scattering_source].first;
-
-    return scatter(scene, mix, isect, towards, scattering, scattering_source);
+scatter_sample scatter(const scene& scene, const material& material,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& from) {
+    return std::visit(
+        [&](const auto& material) {
+            return scatter(scene, material, isect, towards, from);
+        },
+        material);
 }
 
 scatter_sample scatter(const scene& scene, const intersection& isect,
-                       const vec3f& towards, const vec3f& away) {
+                       const vec3f& towards, const vec3f& from) {
     if (isect.mat)
-        return std::visit(
-            [&](const auto& material) {
-                return scatter(scene, material, isect, towards, away);
-            },
-            *isect.mat);
+        return scatter(scene, *isect.mat, isect, towards, from);
     else
-        return scatter(scene, lambertian{}, isect, towards, away);
+        return scatter(scene, lambertian{}, isect, towards, from);
 }
 
 scatter_sample scatter(const scene& scene, sample_sequence* rng,
                        const intersection& isect, const vec3f& towards) {
     if (isect.mat)
-        return std::visit(
-            [&](const auto& material) {
-                return scatter(scene, rng, material, isect, towards);
-            },
-            *isect.mat);
+        return scatter(scene, rng, *isect.mat, isect, towards);
     else
         return scatter(scene, rng, lambertian{}, isect, towards);
 }
@@ -1519,9 +1598,8 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
-// fixing mix materials
 // convergence metering
 // perspective camera
 // interactive preview
-
 // diffuse/glossy transmission
+// coat sampling isnt deterministic

@@ -56,12 +56,14 @@ struct blinn_phong {
     texture specular_color;
 };
 
-struct mixed_material;
-using material = std::variant<emissive, lambertian, specular, glossy,
-                              blinn_phong, mixed_material>;
+struct coated;
+using material =
+    std::variant<emissive, lambertian, specular, glossy, blinn_phong, coated>;
 
-struct mixed_material {
-    std::vector<std::pair<Float, const material*>> layers;
+struct coated {
+    texture weight;
+    const material* coat;
+    const material* base;
 };
 
 struct ray {
