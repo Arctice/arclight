@@ -1,10 +1,9 @@
-
 [film]
 method = "path"
 resolution = [600, 600]
-supersampling = 128
+supersampling = 1024
 global_radiance = 0
-depth = 12
+depth = 24
 
 [camera]
 type = "orthographic"
@@ -12,32 +11,6 @@ scale = 0.9
 position = [5, 4, -4]
 towards = [0.0, 0.2, 0.1]
 up = [0.001, 1, 0]
-
-[material.glass]
-type = "specular"
-absorption = [0, 0, 0]
-refraction = [1.6, 1.6, 1.6]
-transmission = [1, 1, 1]
-
-[material.weird]
-type = "specular"
-roughness = 0.1
-refraction = [0.271, 0.677, 1.316]
-absorption = [0, 0, 0]
-transmission = [1, 1, 1]
-
-[model.dragon]
-file = "dragon.ply"
-
-[[world]]
-material = "glass"
-instance = "model.dragon"
-transform = [["translate", [0, 40, 0]], ["scale", 0.01]]
-
-[[world]]
-triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
-[[world]]
-triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
 
 [model.sphere]
 file = "../sphere.ply"
@@ -49,4 +22,36 @@ light = [8, 8, 8]
 material = "light"
 instance = "model.sphere"
 transform = [["scale", 9], ["translate", [6, 24, 1.2]]]
+
+[material.glass]
+type = "glossy"
+absorption = [0, 0, 0]
+refraction = [1.5, 1.5, 1.5]
+transmission = [1, 1, 1]
+roughness = 0.01
+
+[material.rough]
+type = "glossy"
+absorption = [0, 0, 0]
+refraction = [1.5, 1.5, 1.5]
+transmission = [1, 1, 1]
+roughness = 0.5
+
+[model.dragon]
+file = "dragon.ply"
+
+[[world]]
+material = "glass"
+instance = "model.dragon"
+transform = [["translate", [-30, 40, 50]], ["scale", 0.01]]
+
+[[world]]
+material = "rough"
+instance = "model.dragon"
+transform = [["translate", [30, 40, -50]], ["scale", 0.01]]
+
+[[world]]
+triangle = [[-10, 0, -10], [-10, 0, 10], [10, 0, -10]]
+[[world]]
+triangle = [[10, 0, -10], [-10, 0, 10], [10, 0, 10]]
 

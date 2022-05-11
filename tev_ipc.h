@@ -4,7 +4,7 @@
 namespace ipc {
 
 struct tev {
-    tev();
+    tev(std::string host = "localhost");
     ~tev();
 
     void create_rgb_image(const std::string& name, i32 width, i32 height);

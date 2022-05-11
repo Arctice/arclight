@@ -6,7 +6,10 @@
 #include <array>
 #include <queue>
 #include <chrono>
+
+#include <thread>
 #include <mutex>
+#include <atomic>
 
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
@@ -67,8 +70,7 @@ light sample_texture(const texture& tex, const intersection& isect) {
 }
 
 Float sample_texture_1d(const texture& tex, const intersection& isect) {
-    auto c = sample_texture(tex, isect);
-    return (c.x + c.y + c.z) / 3;
+    return sample_texture(tex, isect).mean();
 }
 
 bool same_normal_hemisphere(vec3f norm, vec3f v) { return 0 < norm.dot(v); }
@@ -453,7 +455,7 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
     vec2f uv[3] = {{0, 0}, {1, 0}, {1, 1}};
     vec2f duvAC = uv[0] - uv[2];
     vec2f duvBC = uv[1] - uv[2];
-    vec3f dAC = tA - tB;
+    vec3f dAC = tA - tC;
     vec3f dBC = tB - tC;
     Float determinant = duvAC.x * duvBC.y - duvAC.y * duvBC.x;
     if (determinant == 0)
@@ -647,14 +649,16 @@ scatter_sample scatter(const scene&, const lambertian& matte,
     };
 }
 
-scatter_sample scatter(const scene&, sample_sequence*, const emissive&,
-                       const intersection&, const vec3f&) {
-    return scatter_sample{};
+scatter_sample scatter(const scene& scene, sample_sequence* rng,
+                       const emissive&, const intersection& isect,
+                       const vec3f& towards) {
+    return scatter(scene, rng, lambertian{}, isect, towards);
 }
 
-scatter_sample scatter(const scene&, const emissive&, const intersection&,
-                       const vec3f&, const vec3f&) {
-    return scatter_sample{};
+scatter_sample scatter(const scene& scene, const emissive&,
+                       const intersection& isect, const vec3f& towards,
+                       const vec3f& from) {
+    return scatter(scene, lambertian{}, isect, towards, from);
 }
 
 scatter_sample blinn_phong_forward(const blinn_phong& material,
@@ -737,10 +741,14 @@ auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
     return (Rp + Rs) * (Float)0.5;
 }
 
-std::optional<vec3f> transmission_direction(const vec3f& in,
-                                            const vec3f& normal,
+std::optional<vec3f> transmission_direction(const vec3f& in, vec3f normal,
                                             Float refraction_ratio) {
     auto cos_in = in.dot(normal);
+    if (cos_in < 0) {
+        cos_in *= -1;
+        normal *= -1;
+    }
+
     auto sin2_in = std::max<Float>(0, (1 - cos_in * cos_in));
     auto eta2 = refraction_ratio * refraction_ratio;
     auto sin2_out = sin2_in * eta2;
@@ -837,7 +845,7 @@ Float trowbridge_reitz_microfacet_geometry(Float roughness, Float a, Float b) {
 vec3f trowbridge_reitz_sample(sample_sequence* rng, Float alpha, vec3f v) {
     auto vh = vec3f{alpha * v.x, alpha * v.y, v.z}.normalized();
     if (vh.z < 0)
-        vh.z *= -1;
+        vh *= -1;
 
     auto T1 = vh.z < (Float)0.99999 ? vec3f{0, 0, 1}.cross(vh).normalized()
                                     : vec3f{1, 0, 0};
@@ -883,79 +891,115 @@ Float beckmann_microfacet_geometry(Float roughness, Float a, Float b) {
 }
 
 light glossy_reflection(const vec3f& towards, const vec3f& away,
-                        Float roughness, light eta, light k) {
-    auto halfv = (away + towards).normalized();
+                        const vec3f& normal, Float roughness) {
     auto a = std::acos(away.z);
     auto b = std::acos(towards.z);
-    auto h = std::acos(halfv.z);
-
-    auto F = fresnel_conductor(std::abs(towards.dot(halfv)), {1}, eta, k);
-
+    auto h = std::acos(normal.z);
     auto D = trowbridge_reitz_microfacet_area(roughness, h);
     auto G = trowbridge_reitz_microfacet_geometry(roughness, a, b);
-
-    // auto D = beckmann_microfacet_area(roughness, h);
-    // auto G = beckmann_microfacet_geometry(roughness, a, b);
-
-    return F * D * G / (4 * std::abs(away.z) * std::abs(towards.z));
+    return D * G / std::abs(4 * away.z * towards.z);
 }
 
-scatter_sample scatter(const scene&, sample_sequence* rng,
+Float glossy_transmission(const vec3f& towards, const vec3f& away,
+                          const vec3f& normal, Float roughness, Float eta) {
+    auto a = std::acos(away.z);
+    auto b = std::acos(towards.z);
+    auto h = std::acos(normal.z);
+    auto D = trowbridge_reitz_microfacet_area(roughness, h);
+    auto G = trowbridge_reitz_microfacet_geometry(roughness, a, b);
+    auto denom = away.dot(normal) + towards.dot(normal) / eta;
+    return (D * G / (denom * denom)) *
+           std::abs((towards.dot(normal) * away.dot(normal)) /
+                    (towards.z * away.z));
+}
+
+scatter_sample scatter(const scene& scene, sample_sequence* rng,
                        const glossy& material, const intersection& isect,
                        const vec3f& towards) {
-    // auto away = sample_cosine_hemisphere(rng->sample_2d());
-    // auto angle_cos = away.z;
-    // auto probability = std::abs(angle_cos) / π;
+    auto air_refraction = light{1};
+    auto internal_refraction = sample_texture(material.refraction, isect);
+    auto absorption = sample_texture(material.absorption, isect);
+    auto roughness = sample_texture_1d(material.roughness, isect);
+    auto transmission_rate = sample_texture_1d(material.transmission, isect);
+    auto non_transmissive = not transmission_rate;
 
     auto in = isect.shading.to_local(towards).normalized();
-    auto inside = in.z < 0;
-    if (inside)
-        in.z *= -1;
+    auto microfacet = trowbridge_reitz_sample(rng, roughness, in);
+    auto microfacet_probability =
+        trowbridge_reitz_sample_pdf(roughness, microfacet, in);
 
-    auto facet = trowbridge_reitz_sample(
-        rng, sample_texture_1d(material.roughness, isect), in);
-    auto away = (in * -1) + facet * 2 * in.dot(facet);
+    auto outside = in.z >= 0;
+    auto refraction_from = outside ? air_refraction : internal_refraction;
+    auto refraction_to = outside ? internal_refraction : air_refraction;
 
-    auto f = glossy_reflection(in, away,
-                               sample_texture_1d(material.roughness, isect),
-                               sample_texture(material.refraction, isect),
-                               sample_texture(material.absorption, isect));
-    auto probability =
-        trowbridge_reitz_sample_pdf(
-            sample_texture_1d(material.roughness, isect), facet, in) /
-        (4 * std::abs(in.dot(facet)));
+    auto cos_θ = in.dot(microfacet);
+    auto reflectivity = fresnel_conductor(cos_θ, air_refraction,
+                                          internal_refraction, absorption);
+    auto transmittance = light{1} - reflectivity;
 
-    if (inside)
-        away.z *= -1;
+    if (rng->sample_1d() < reflectivity.mean() or non_transmissive) {
+        auto reflection = (in * -1) + microfacet * 2 * cos_θ;
+        auto f = glossy_reflection(in, reflection, microfacet, roughness);
+        auto probability = microfacet_probability / (4 * std::abs(cos_θ));
 
-    return scatter_sample{
-        .value = f,
-        .direction = isect.shading.to_world(away),
-        .probability = probability,
-    };
+        return scatter_sample{.value = reflectivity * f,
+                              .direction = isect.shading.to_world(reflection),
+                              .probability =
+                                  probability *
+                                  (non_transmissive ? 1 : reflectivity.mean()),
+                              .specular = true};
+    }
+
+    auto forward_eta = air_refraction.mean() / internal_refraction.mean();
+    auto backwards_eta = 1 / forward_eta;
+    if (cos_θ < 0)
+        std::swap(forward_eta, backwards_eta);
+
+    auto refraction = transmission_direction(in, microfacet, forward_eta);
+    if (not refraction or same_shading_hemisphere(*refraction, in))
+        return {.probability = {}};
+    refraction = refraction->normalized();
+
+    auto f = glossy_transmission(in, *refraction, microfacet, roughness,
+                                 backwards_eta);
+    f /= backwards_eta * backwards_eta;
+    auto transmission = transmittance * f;
+
+    auto pdf_denom =
+        refraction->dot(microfacet) + in.dot(microfacet) / backwards_eta;
+    auto probability = transmittance.mean() * microfacet_probability *
+                       std::abs(refraction->dot(microfacet)) /
+                       (pdf_denom * pdf_denom);
+
+    return scatter_sample{.value = transmission,
+                          .direction = isect.shading.to_world(*refraction),
+                          .probability = probability,
+                          .specular = true};
 }
 
 scatter_sample scatter(const scene&, const glossy& material,
                        const intersection& isect, const vec3f& towards,
                        const vec3f& out) {
-    auto away = isect.shading.to_local(out).normalized();
-    auto in = isect.shading.to_local(towards).normalized();
-    auto facet = (away + in).normalized();
-    auto probability =
-        trowbridge_reitz_sample_pdf(
-            sample_texture_1d(material.roughness, isect), facet, in) /
-        (4 * std::abs(in.dot(facet)));
-    auto f = same_shading_hemisphere(in, away)
-                 ? glossy_reflection(
-                       in, away, sample_texture_1d(material.roughness, isect),
-                       sample_texture(material.refraction, isect),
-                       sample_texture(material.absorption, isect))
-                 : 0;
-    return scatter_sample{
-        .value = f,
-        .direction = out,
-        .probability = probability,
-    };
+    return {.direction = out};
+
+    // auto away = isect.shading.to_local(out).normalized();
+    // auto in = isect.shading.to_local(towards).normalized();
+    // auto facet = (away + in).normalized();
+    // auto probability =
+    //     trowbridge_reitz_sample_pdf(
+    //         sample_texture_1d(material.roughness, isect), facet, in) /
+    //     (4 * std::abs(in.dot(facet)));
+    // auto f = same_shading_hemisphere(in, away)
+    //              ? glossy_reflection(
+    //                    in, away, sample_texture_1d(material.roughness,
+    //                    isect), 1, sample_texture(material.refraction, isect),
+    //                    sample_texture(material.absorption, isect))
+    //              : 0;
+    // return scatter_sample{
+    //     .value = f,
+    //     .direction = out,
+    //     .probability = probability,
+    // };
 }
 
 scatter_sample coat_scatter(const scene& scene, sample_sequence* rng,
@@ -1175,8 +1219,10 @@ light scatter_trace(const scene& scene, sample_sequence* rng, ray r,
     while (true) {
         auto intersection =
             intersect(scene.root, r, std::numeric_limits<Float>::max());
-        if (not intersection)
-            return light{scene.film.global_radiance} * beta;
+        if (not intersection) {
+            L += light{scene.film.global_radiance} * beta;
+            break;
+        }
 
         if (intersection->mat and is_emissive(intersection->mat)) {
             L += beta * emitted_light(*intersection);
@@ -1244,8 +1290,6 @@ scatter_sample sample_light(vec2f sample, const scene& scene,
                                         .direction = light_direction});
 
     auto icos = (light_ray.direction).dot(intersection.normal);
-    if (icos < 0)
-        return {.probability = light_probability};
 
     auto visible =
         intersect(light, light_ray, std::numeric_limits<Float>::max());
@@ -1258,9 +1302,11 @@ scatter_sample sample_light(vec2f sample, const scene& scene,
 
     auto towards = r.direction * -1;
     auto reflected = scatter(scene, intersection, towards, light_ray.direction);
+    if (not reflected.probability)
+        return {.probability = light_probability};
 
     auto L = emitted_light(*visible);
-    L *= reflected.value * icos;
+    L *= reflected.value * std::abs(icos);
     L *= power_heuristic(light_probability, reflected.probability) /
          light_probability;
 
@@ -1428,6 +1474,8 @@ struct image {
             return;
         }
 
+        auto supersampling = this->supersampling.load();
+
         constexpr auto tile_size = max_offset * 2 + 1;
         ::light update[tile_size][tile_size]{};
         auto hlines = vec2<int>{std::max(-max_offset, -px.y),
@@ -1443,7 +1491,7 @@ struct image {
                     auto p = vec2f{x + (Float)0.5, y + (Float)0.5} +
                              vec2f{1 / (Float)3, 0} * (c - 1);
                     auto d = (position - p).length_sq();
-                    auto f = gaussian(alpha, filter_radius, d);
+                    auto f = gaussian(alpha, 2, d);
                     update[yd + max_offset][xd + max_offset][c] += value[c] * f;
                 }
             }
@@ -1467,10 +1515,53 @@ struct image {
 
     std::mutex update_mutex{};
     vec2<int> resolution;
-    int supersampling;
+    std::atomic<int> supersampling{0};
+    std::atomic<bool> finished{false};
     std::vector<light> light;
     std::vector<float> partial_image;
 };
+
+void ipc_update_stream(ipc::tev* ipc, image* image, std::string ipc_name) {
+    auto resolution = image->resolution;
+    constexpr int chunk_size = 8;
+
+    const auto chunks = (int)std::ceil(resolution.y / (float)chunk_size);
+    std::vector<int> chunk_status(chunks, 1);
+    chunk_status.resize(chunks);
+    int current_chunk = 0;
+
+    std::vector<float> update;
+
+    while (true) {
+        auto image_sample = image->supersampling.load();
+        auto chunk_sample = chunk_status[current_chunk];
+        if (image_sample <= chunk_sample) {
+            if (image->finished)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+
+        auto first = resolution.x * current_chunk * chunk_size * 3;
+        auto last =
+            std::min(resolution.x * (current_chunk + 1) * chunk_size * 3,
+                     resolution.x * resolution.y * 3);
+        auto size = last - first;
+
+        update.resize(size);
+        {
+            auto lock = std::lock_guard{image->update_mutex};
+            std::memcpy(update.data(), image->partial_image.data() + first,
+                        size * sizeof(float));
+        }
+
+        ipc->update_rgb_image(ipc_name, 0, current_chunk * chunk_size,
+                              resolution.x, chunk_size, update);
+
+        chunk_status[current_chunk++] = image_sample;
+        current_chunk %= chunks;
+    }
+}
 
 int main(int argc, char** argv) {
     auto scene_path = [argc, argv]() -> std::optional<std::string> {
@@ -1479,27 +1570,34 @@ int main(int argc, char** argv) {
         return {{argv[1]}};
     }();
 
-    auto arg_present = [argc, argv](std::string name) -> bool {
-        for (auto i{2}; i < argc; ++i) {
-            if (std::string{argv[i]} == name)
-                return true;
-        }
-        return false;
-    };
-
-    auto debug = arg_present("--debug");
-
     if (not scene_path) {
         fmt::print("missing scene path\n", *scene_path);
         exit(1);
     }
 
+    auto cmd_arg = [argc,
+                    argv](std::string name) -> std::pair<bool, std::string> {
+        name = "-" + name;
+        for (auto i{2}; i < argc; ++i) {
+            auto arg = std::string{argv[i]};
+            if (arg == name)
+                return {true, ""};
+            if (arg.substr(0, name.length() + 1) == name + "=")
+                return {true, arg.substr(name.length() + 1)};
+        }
+
+        return {false, ""};
+    };
+
     auto scene = load_scene(*scene_path);
     auto resolution = scene.film.resolution;
+    image image{resolution};
     fmt::print("scene({}) ready\n", *scene_path);
 
     scene.lights = collect_lights(&scene.root);
     fmt::print("lights({}) ready\n", scene.lights.size());
+
+    auto debug = cmd_arg("debug").first;
 
     auto trace = [&scene, debug]() {
         if (debug)
@@ -1520,19 +1618,31 @@ int main(int argc, char** argv) {
         }
     }();
 
+    auto [tev_enabled, tev_host] = cmd_arg("tev");
+
     auto tev = std::optional<ipc::tev>{};
-    auto ipc_name =
-        *scene_path +
-        fmt::format(
-            "-{}", std::chrono::system_clock::now().time_since_epoch().count() %
-                       (1 << 16));
-    if (arg_present("--tev")) {
+    auto ipc_worker = std::thread{};
+    if (tev_enabled) {
+        auto ipc_name =
+            *scene_path +
+            fmt::format(
+                "-{}",
+                std::chrono::system_clock::now().time_since_epoch().count() %
+                    (1 << 16));
         try {
-            tev.emplace();
+            if (not tev_host.empty())
+                tev.emplace(tev_host);
+            else
+                tev.emplace();
+
             tev->create_rgb_image(ipc_name, resolution.x, resolution.y);
+            ipc_worker =
+                std::thread(ipc_update_stream, &*tev, &image, ipc_name);
         }
         catch (std::exception& err) {
-            fmt::print("tev connection failed, image output only\n");
+            fmt::print("tev connection failed, image output only ({})\n",
+                       err.what());
+            tev.reset();
         }
     }
 
@@ -1545,8 +1655,6 @@ int main(int argc, char** argv) {
         }
     }
     fmt::print("sampler ready\n");
-
-    image image{resolution};
 
     for (int s{}; s < scene.film.supersampling; ++s) {
         image.set_supersampling(s + 1);
@@ -1571,11 +1679,9 @@ int main(int argc, char** argv) {
                 image.add_sample(point, light);
             }
         }
-
-        if (tev)
-            tev->update_rgb_image(ipc_name, 0, 0, resolution.x, resolution.y,
-                                  image.partial_image);
     }
+
+    image.finished = true;
 
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
@@ -1590,6 +1696,9 @@ int main(int argc, char** argv) {
     sf::Image img;
     img.create((u32)(resolution.x), (u32)(resolution.y), out.data());
     img.saveToFile("out.png");
+
+    if (ipc_worker.joinable())
+        ipc_worker.join();
 }
 
 // coordinates:
@@ -1600,6 +1709,4 @@ int main(int argc, char** argv) {
 // todo:
 // convergence metering
 // perspective camera
-// interactive preview
-// diffuse/glossy transmission
 // coat sampling isnt deterministic

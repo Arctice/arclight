@@ -1,15 +1,16 @@
 
 [film]
 method = "path"
-resolution = [200, 200]
-supersampling = 256
-global_radiance = 1
+resolution = [100, 100]
+supersampling = 128
+global_radiance = 0
+depth = 40
 
 [camera]
 type = "orthographic"
-scale = 1
-position = [-5, 0, 0]
-towards = [0, 0, 0]
+scale = 0.5
+position = [0, -0.55, 0]
+towards = [0.01, -1, 0.001]
 up = [0, 0, 1]
 
 [model.sphere]
@@ -17,23 +18,19 @@ file = "sphere.ply"
 
 [material.white]
 type = "lambertian"
-reflectance = [1, 1, 1]
+reflectance = 1
 
 [material.light]
 type = "emissive"
-light = [1, 1, 1]
+light = 1
+
 
 [[world]]
-material = "white"
+material = "light"
 instance = "model.sphere"
 transform = [["scale", 0.5]]
 
 [[world]]
 material = "white"
 instance = "model.sphere"
-transform = [["scale", 10]]
-
-[[world]]
-material = "light"
-instance = "model.sphere"
-transform = [["translate", [-7, 0, 0]]]
+transform = [["scale", 1]]

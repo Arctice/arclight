@@ -38,11 +38,13 @@ public:
 
     T length_sq() const;
     T length() const;
+    T mean() const;
 
     vec3<T> normalized() const;
 
     T dot(const vec3&) const;
     vec3 cross(const vec3&) const;
+
 };
 
 template <typename T> vec3<T> vec3<T>::normalized() const {
@@ -149,6 +151,8 @@ template <typename T> T vec3<T>::length_sq() const {
 template <typename T> T vec3<T>::length() const {
     return std::sqrt(this->length_sq());
 }
+
+template <typename T> T vec3<T>::mean() const { return (x + y + z) / (T)3; }
 
 template <typename T>
 std::ostream& operator<<(std::ostream& stream, const vec3<T>& V) {

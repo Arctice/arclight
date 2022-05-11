@@ -9,9 +9,9 @@ struct tev::impl {
     asio::io_context io;
     asio::ip::tcp::socket socket{io};
 
-    impl() {
+    impl(std::string host) {
         asio::ip::tcp::resolver resolver{io};
-        auto endpoint = resolver.resolve("127.0.0.1", "14158");
+        auto endpoint = resolver.resolve(host, "14158");
         asio::connect(socket, endpoint);
     }
 
@@ -20,7 +20,7 @@ struct tev::impl {
     }
 };
 
-tev::tev() : pimpl(std::make_unique<impl>()) {}
+tev::tev(std::string host) : pimpl(std::make_unique<impl>(host)) {}
 tev::~tev() {}
 
 class OStream {

@@ -47,6 +47,7 @@ struct glossy {
     texture roughness;
     texture refraction;
     texture absorption;
+    texture transmission;
 };
 
 struct blinn_phong {

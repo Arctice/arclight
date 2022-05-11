@@ -17,12 +17,14 @@ type = "glossy"
 roughness = 0.2
 refraction = [0.16, 0.35, 1.5]
 absorption = [4, 2.5, 1.9]
+transmission = 0
 
 [material.copper]
 type = "glossy"
 roughness = 0.1
 refraction = [0.271, 0.677, 1.316]
 absorption = [3.61, 2.62, 2.29]
+transmission = 0
 
 [model.dragon]
 file = "dragon.ply"

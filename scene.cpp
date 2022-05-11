@@ -144,6 +144,7 @@ material* parse_material(scene_load_context& context,
             .roughness = parse_texture(context, nt["roughness"]),
             .refraction = parse_texture(context, nt["refraction"]),
             .absorption = parse_texture(context, nt["absorption"]),
+            .transmission = parse_texture(context, nt["transmission"]),
         });
     }
 
