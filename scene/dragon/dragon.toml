@@ -44,7 +44,6 @@ file = "../sphere.ply"
 [material.light]
 type = "emissive"
 light = [8, 8, 8]
-[node.light]
 [[world]]
 material = "light"
 instance = "model.sphere"

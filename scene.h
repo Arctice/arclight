@@ -11,14 +11,17 @@ using light = vec3f;
 
 struct uv_texture;
 struct checkerboard_texture;
+struct constant_texture;
 struct product_texture;
 struct image_texture;
-using texture =
-    std::variant<Float, light, uv_texture, checkerboard_texture, product_texture, image_texture>;
+using texture = std::variant<Float, light, uv_texture, checkerboard_texture,
+                             constant_texture, product_texture, image_texture>;
 
 struct uv_texture {};
 
 struct checkerboard_texture {};
+
+struct constant_texture { light v; };
 
 struct product_texture {
     std::shared_ptr<texture> A;
@@ -37,17 +40,22 @@ struct lambertian {
     texture reflectance{light{0.5}};
 };
 
-struct specular {
+struct translucent {
+    texture reflectance;
     texture transmission;
+};
+
+struct specular {
     texture refraction;
     texture absorption;
+    texture transmission;
 };
 
 struct glossy {
-    texture roughness;
     texture refraction;
     texture absorption;
     texture transmission;
+    texture roughness;
 };
 
 struct blinn_phong {
@@ -58,14 +66,21 @@ struct blinn_phong {
 };
 
 struct coated;
-using material =
-    std::variant<emissive, lambertian, specular, glossy, blinn_phong, coated>;
+struct alpha;
+using material = std::variant<emissive, lambertian, translucent, specular,
+                              glossy, blinn_phong, alpha, coated>;
 
 struct coated {
     texture weight;
     const material* coat;
     const material* base;
 };
+
+struct alpha {
+    texture map;
+    const material* base;
+};
+
 
 struct ray {
     vec3f origin;
@@ -127,36 +142,96 @@ using node = node_body<node_wrapper>;
 template <class T> using node_view_wrapper = const T*;
 using node_view = node_body<node_view_wrapper>;
 
+// template <class Fn> std::pair<int, Float>
+// partition_dimension(const std::vector<int>& objs, Fn&& bound) {
+//     bounding_box all = {vec3f{std::numeric_limits<Float>::max()},
+//                         vec3f{std::numeric_limits<Float>::lowest()}};
+//     for (auto index : objs) all = all | bound(index).centroid();
+//     auto size = vec3f{all.max.x - all.min.x, all.max.y - all.min.y,
+//                       all.max.z - all.min.z};
+//     auto dimension = (size.x > size.y) ? (size.x > size.z ? 0 : 2)
+//                                        : (size.y > size.z ? 1 : 2);
+//     return {dimension, all.min[dimension] + size[dimension] / 2};
+// }
+
 template <class Fn> std::pair<int, Float>
 partition_dimension(const std::vector<int>& objs, Fn&& bound) {
-    bounding_box all = {{std::numeric_limits<Float>::max()},
-                        {std::numeric_limits<Float>::lowest()}};
+    bounding_box all = {vec3f{std::numeric_limits<Float>::max()},
+                        vec3f{std::numeric_limits<Float>::lowest()}};
     for (auto index : objs) all = all | bound(index).centroid();
-
     auto size = vec3f{all.max.x - all.min.x, all.max.y - all.min.y,
                       all.max.z - all.min.z};
-    auto best = std::max(size.x, std::max(size.y, size.z));
-    if (best == size.x)
-        return {0, all.min.x + size.x / 2};
-    else if (best == size.y)
-        return {1, all.min.y + size.y / 2};
-    else
-        return {2, all.min.z + size.z / 2};
+    auto d = (size.x > size.y) ? (size.x > size.z ? 0 : 2)
+                               : (size.y > size.z ? 1 : 2);
+    auto min = all.min[d];
+    auto width = size[d];
+
+    struct split {
+        Float pos;
+        int left_count{};
+        int right_count{};
+        bounding_box left_bounds{};
+        bounding_box right_bounds{};
+    };
+    constexpr int max_split_count = 12;
+    std::array<split, max_split_count> splits{};
+    int split_count = std::min<int>(objs.size() + 1, max_split_count);
+
+    for (int n{}; n < split_count; ++n)
+        splits[n].pos = min + width * ((n + 1) / (Float)(split_count + 1));
+
+    for (auto index : objs) {
+        auto bb = bound(index);
+        auto pos = bb.centroid();
+        all = all | bb;
+        for (int n{}; n < split_count; ++n) {
+            if (pos[d] < splits[n].pos) {
+                splits[n].left_count++;
+                splits[n].left_bounds = splits[n].left_bounds | bb;
+            }
+            else {
+                splits[n].right_count++;
+                splits[n].right_bounds = splits[n].right_bounds | bb;
+            }
+        }
+    }
+
+    auto total_surface_area = all.surface_area();
+    Float best_split = min;
+    Float best_value = std::numeric_limits<Float>::max();
+    for (int n{}; n < split_count; ++n) {
+        auto surface_area_heuristic =
+            (Float)0.125 +
+            (splits[n].left_count * splits[n].left_bounds.surface_area() +
+             splits[n].right_count * splits[n].right_bounds.surface_area()) /
+                total_surface_area;
+        if (surface_area_heuristic < best_value) {
+            best_split = splits[n].pos;
+            best_value = surface_area_heuristic;
+        }
+    }
+
+    return {d, best_split};
 }
 
 template <class Fn>
 BVH_tree build_bvh(const std::vector<int>& objs, Fn&& bound) {
     BVH_tree node;
-    auto [dimension, cut] = partition_dimension(objs, bound);
-    node.bounds = {{std::numeric_limits<Float>::max()},
-                   {std::numeric_limits<Float>::lowest()}};
+    if (objs.empty()) {
+        node.bounds = {vec3f{0}, vec3f{0}};
+        return node;
+    }
+
+    node.bounds = {vec3f{std::numeric_limits<Float>::max()},
+                   vec3f{std::numeric_limits<Float>::lowest()}};
     for (auto index : objs) node.bounds = node.bounds | bound(index);
 
-    if (objs.size() <= 16) {
+    if (objs.size() <= 4) {
         node.overlap = objs;
         return node;
     }
 
+    auto [dimension, cut] = partition_dimension(objs, bound);
     std::vector<int> L;
     std::vector<int> R;
     for (auto index : objs) {
@@ -167,10 +242,17 @@ BVH_tree build_bvh(const std::vector<int>& objs, Fn&& bound) {
             R.push_back(index);
     }
 
-    if (not L.empty())
-        node.a = std::make_unique<BVH_tree>(build_bvh(L, bound));
-    if (not R.empty())
-        node.b = std::make_unique<BVH_tree>(build_bvh(R, bound));
+    if (L.empty()) {
+        node.overlap = R;
+        return node;
+    }
+    else if (R.empty()) {
+        node.overlap = L;
+        return node;
+    }
+
+    node.a = std::make_unique<BVH_tree>(build_bvh(L, bound));
+    node.b = std::make_unique<BVH_tree>(build_bvh(R, bound));
 
     return node;
 }
@@ -368,19 +450,31 @@ struct transform {
 };
 
 struct camera {
+    virtual ray point(vec2f px) const = 0;
+    virtual ~camera(){}
+};
+
+struct orthographic_camera : public camera {
+    orthographic_camera(vec2f resolution, Float scale, vec3f position,
+                        vec3f towards, vec3f up);
+    ray point(vec2f px) const;
+
     transform camera_to_world;
     transform raster_to_screen;
     transform raster_to_camera;
     transform screen_to_camera;
-
-    ray point(vec2f px) {
-        auto o = raster_to_camera.point({px.x, px.y, 0});
-        return camera_to_world(ray{o, {0, 0, 1}});
-    }
 };
 
-camera orthographic_camera(vec2f resolution, Float scale, vec3f position,
-                           vec3f towards, vec3f up);
+struct perspective_camera : public camera {
+    perspective_camera(vec2f resolution, Float fov, vec3f position,
+                       vec3f towards, vec3f up);
+    ray point(vec2f px) const;
+
+    transform camera_to_world;
+    transform raster_to_screen;
+    transform raster_to_camera;
+    transform screen_to_camera;
+};
 
 struct node_bvh {
     std::vector<node> nodes;
@@ -394,15 +488,19 @@ inline node_view make_node_view(const node& n) {
 }
 
 struct node_instance {
-    bounding_box transformed_bounds();
-
-    node_instance(transform T, const node_view& n)
-        : T(T), n(n), bounds(transformed_bounds()) {}
-    node_instance(transform T, const node& n)
-        : T(T), n(make_node_view(n)), bounds(transformed_bounds()) {}
+    node_instance(transform T, const node_view& n) : T(T), n(n) {
+        precompute_bounds();
+    }
+    node_instance(transform T, const node& n) : T(T), n(make_node_view(n)) {
+        precompute_bounds();
+    }
     const transform T;
     node_view n;
-    const bounding_box bounds;
+    bounding_box world_bounds;
+    bounding_box local_bounds;
+
+private:
+    void precompute_bounds();
 };
 
 std::unique_ptr<node_instance> instance(const transform& T, const node& n);
@@ -434,12 +532,24 @@ struct bounding_sphere {
     Float radius;
 };
 
-using light_source = std::pair<node_instance, bounding_sphere>;
+
+struct node_light {
+    node_instance node;
+    bounding_sphere bounds;
+};
+
+struct distant_light {
+    vec3f towards;
+    light value;
+};
+
+using light_source = std::variant<distant_light, node_light>;
+
 
 struct scene {
     film film;
     node root;
-    camera view;
+    std::unique_ptr<camera> view;
     std::vector<std::unique_ptr<material>> materials;
     std::vector<light_source> lights;
     std::vector<node> assets;

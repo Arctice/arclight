@@ -58,30 +58,35 @@ type = "glossy"
 roughness = 0.16
 refraction = [10, 10, 10]
 absorption = [0.1, 0.1, 0.1]
+transmission = 0
 
 [material.G2]
 type = "glossy"
 roughness = 0.08
 refraction = [10, 10, 10]
 absorption = [0.1, 0.1, 0.1]
+transmission = 0
 
 [material.G3]
 type = "glossy"
 roughness = 0.04
 refraction = [10, 10, 10]
 absorption = [0.1, 0.1, 0.1]
+transmission = 0
 
 [material.G4]
 type = "glossy"
 roughness = 0.02
 refraction = [10, 10, 10]
 absorption = [0.1, 0.1, 0.1]
+transmission = 0
 
 [material.G5]
 type = "glossy"
 roughness = 0.01
 refraction = [10, 10, 10]
 absorption = [0.1, 0.1, 0.1]
+transmission = 0
 
 
 [[world]]

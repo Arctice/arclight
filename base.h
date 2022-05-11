@@ -43,11 +43,17 @@ struct bounding_box {
                       std::max(max.z, rhs.z)}};
     }
 
-    vec3f centroid() const { return (max + min) * (Float)0.5; };
+    vec3f centroid() const { return (max + min) / 2; }
+
+    Float surface_area() const {
+        auto d = max - min;
+        return 2 * (d.x * d.y + d.x * d.z + d.y * d.z);
+    }
 };
 
 struct triangle {
     vec3f A, B, C;
+    vec2f uv[3] = {{0, 0}, {1, 1}, {0, 1}};
 };
 
 struct indexed_mesh;
@@ -66,4 +72,4 @@ struct indexed_mesh {
     indexed_triangle reify(int n) const { return {this, triangles[n]}; }
 };
 
-indexed_mesh load_ply(std::string path, bool describe = false);
+indexed_mesh load_ply(std::string path);

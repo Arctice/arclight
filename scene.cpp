@@ -12,8 +12,8 @@ template <class T, class N> auto parse_vec2(const toml::node_view<N>& v) {
 template <class T, class N> auto parse_vec3(const toml::node_view<N>& v) {
     if (v.is_number())
         return vec3<T>{*v.template value<T>()};
-    if(not v[0].is_number()){
-        fmt::print("warn: couldn't parse vector at {}\n", v.node()->source());
+    if (not v[0].is_number()) {
+        fmt::print("err: couldn't parse vector at {}\n", v.node()->source());
     }
     return vec3<T>{*v[0].template value<T>(), *v[1].template value<T>(),
                    *v[2].template value<T>()};
@@ -28,6 +28,68 @@ struct scene_load_context {
     std::unordered_map<std::string, sf::Image> images;
 };
 
+matrix_sq4 matrix_inverse(const matrix_sq4& m) {
+    int indxc[4], indxr[4];
+    int ipiv[4] = {0, 0, 0, 0};
+    Float minv[4][4];
+    memcpy(minv, m.m, 4 * 4 * sizeof(Float));
+    for (int i = 0; i < 4; i++) {
+        int irow = 0, icol = 0;
+        Float big = 0.f;
+        // Choose pivot
+        for (int j = 0; j < 4; j++) {
+            if (ipiv[j] != 1) {
+                for (int k = 0; k < 4; k++) {
+                    if (ipiv[k] == 0) {
+                        if (std::abs(minv[j][k]) >= big) {
+                            big = Float(std::abs(minv[j][k]));
+                            irow = j;
+                            icol = k;
+                        }
+                    }
+                    else if (ipiv[k] > 1)
+                        throw std::runtime_error(
+                            "Singular matrix in MatrixInvert");
+                }
+            }
+        }
+        ++ipiv[icol];
+        // Swap rows _irow_ and _icol_ for pivot
+        if (irow != icol) {
+            for (int k = 0; k < 4; ++k) std::swap(minv[irow][k], minv[icol][k]);
+        }
+        indxr[i] = irow;
+        indxc[i] = icol;
+        if (minv[icol][icol] == 0.f)
+            throw std::runtime_error("Singular matrix in MatrixInvert");
+
+        // Set $m[icol][icol]$ to one by scaling row _icol_ appropriately
+        Float pivinv = 1. / minv[icol][icol];
+        minv[icol][icol] = 1.;
+        for (int j = 0; j < 4; j++) minv[icol][j] *= pivinv;
+
+        // Subtract this row from others to zero out their columns
+        for (int j = 0; j < 4; j++) {
+            if (j != icol) {
+                Float save = minv[j][icol];
+                minv[j][icol] = 0;
+                for (int k = 0; k < 4; k++) minv[j][k] -= minv[icol][k] * save;
+            }
+        }
+    }
+    // Swap columns to reflect permutation
+    for (int j = 3; j >= 0; j--) {
+        if (indxr[j] != indxc[j]) {
+            for (int k = 0; k < 4; k++)
+                std::swap(minv[k][indxr[j]], minv[k][indxc[j]]);
+        }
+    }
+
+    matrix_sq4 mx;
+    memcpy(mx.m, minv, 4 * 4 * sizeof(Float));
+    return mx;
+}
+
 transform parse_transform(const toml::array& ts) {
     auto T = transform::identity();
     for (auto& e : ts) {
@@ -39,7 +101,7 @@ transform parse_transform(const toml::array& ts) {
             T = transform::translate(parse_vec3<Float>(value)).compose(T);
         }
         else if (name == "scale") {
-            T = transform::scale(*value.value<Float>()).compose(T);
+            T = transform::scale(parse_vec3<Float>(value)).compose(T);
         }
         else if (name == "rotate-x") {
             T = transform::rotate_x(*value.value<Float>()).compose(T);
@@ -50,6 +112,17 @@ transform parse_transform(const toml::array& ts) {
         else if (name == "rotate-z") {
             T = transform::rotate_z(*value.value<Float>()).compose(T);
         }
+        else if (name == "matrix") {
+            matrix_sq4 mx;
+            auto arr = *value.as_array();
+            for (int n{}; n < 16; ++n) {
+                auto v = arr[n].value<Float>();
+                mx.m[n % 4][n / 4] = *v;
+            }
+            T = transform{mx, matrix_inverse(mx)}.compose(T);
+        }
+        else
+            throw std::runtime_error(fmt::format("bad transform {}", *name));
     }
 
     return T;
@@ -64,9 +137,11 @@ void parse_texture_definition(scene_load_context& context,
 
     if (type == "image") {
         auto file = **v["file"].as_string();
-        context.images[name].loadFromFile(context.scene_root /
-                                          std::filesystem::path{file});
-        context.textures[name] = image_texture{&context.images[name]};
+        if (not context.images.contains(file)) {
+            context.images[file].loadFromFile(context.scene_root /
+                                              std::filesystem::path{file});
+        }
+        context.textures[name] = image_texture{&context.images.at(file)};
     }
     else if (type == "product") {
         auto A{std::make_shared<texture>(Float{1})};
@@ -82,9 +157,12 @@ void parse_texture_definition(scene_load_context& context,
     else if (type == "checkerboard") {
         context.textures[name] = checkerboard_texture{};
     }
-    else {
-        throw std::runtime_error(fmt::format("bad texture type {}", type));
+    else if (type == "constant") {
+        context.textures[name] =
+            constant_texture{parse_vec3<Float>(v["color"])};
     }
+    else
+        throw std::runtime_error(fmt::format("bad texture type {}", type));
 }
 
 template <class N> texture parse_texture(scene_load_context& context,
@@ -112,9 +190,29 @@ template <class N> texture parse_texture(scene_load_context& context,
     else if (v.is_number())
         return *v.template value<Float>();
     else {
-        fmt::print("warn: couldn't parse texture at {}\n", v.node()->source());
-        return {0};
+        fmt::print("err: couldn't parse texture at {}\n", v.node()->source());
+        return vec3f{0};
     }
+}
+
+texture fix_refraction(texture eta) {
+    if (auto r = std::get_if<Float>(&eta); r) {
+        if (*r <= 1.0)
+            *r = 1.01;
+    }
+    else if (auto l = std::get_if<light>(&eta); l) {
+        for (int d{}; d < 3; ++d) {
+            if ((*l)[d] <= 1.0)
+                (*l)[d] = 1.01;
+        }
+    }
+    else if (auto c = std::get_if<constant_texture>(&eta); c) {
+        for (int d{}; d < 3; ++d) {
+            if (c->v[d] <= 1.0)
+                c->v[d] = 1.01;
+        }
+    }
+    return eta;
 }
 
 material* parse_material(scene_load_context& context,
@@ -131,20 +229,28 @@ material* parse_material(scene_load_context& context,
             .reflectance = parse_texture(context, nt["reflectance"])});
     }
 
+    else if (type == "translucent") {
+        context.materials[name] = std::make_unique<material>(translucent{
+            .reflectance = parse_texture(context, nt["reflectance"]),
+            .transmission = parse_texture(context, nt["transmission"])});
+    }
+
     else if (type == "specular") {
+        auto refraction = parse_texture(context, nt["refraction"]);
         context.materials[name] = std::make_unique<material>(specular{
-            .transmission = parse_texture(context, nt["transmission"]),
-            .refraction = parse_texture(context, nt["refraction"]),
+            .refraction = fix_refraction(refraction),
             .absorption = parse_texture(context, nt["absorption"]),
+            .transmission = parse_texture(context, nt["transmission"]),
         });
     }
 
     else if (type == "glossy") {
+        auto refraction = parse_texture(context, nt["refraction"]);
         context.materials[name] = std::make_unique<material>(glossy{
-            .roughness = parse_texture(context, nt["roughness"]),
-            .refraction = parse_texture(context, nt["refraction"]),
+            .refraction = fix_refraction(refraction),
             .absorption = parse_texture(context, nt["absorption"]),
             .transmission = parse_texture(context, nt["transmission"]),
+            .roughness = parse_texture(context, nt["roughness"]),
         });
     }
 
@@ -182,6 +288,20 @@ material* parse_material(scene_load_context& context,
         context.materials[name] = std::make_unique<material>(std::move(coat));
     }
 
+    else if (type == "alpha") {
+        alpha alpha{};
+        assert(nt.contains("map"));
+        assert(nt.contains("base"));
+        auto base = nt["base"].value<std::string>();
+        if (not context.materials.contains(*base))
+            parse_material(context, material_table, *base,
+                           *material_table[*base].as_table());
+        assert(context.materials.contains(*base));
+        alpha.map = parse_texture(context, nt["map"]);
+        alpha.base = context.materials.at(*base).get();
+        context.materials[name] = std::make_unique<material>(std::move(alpha));
+    }
+
     else
         throw std::runtime_error(fmt::format("bad material type {}", type));
 
@@ -189,8 +309,50 @@ material* parse_material(scene_load_context& context,
     return context.materials.at(name).get();
 }
 
-node parse_node(const scene_load_context& context, const toml::table& nt) {
+std::optional<node> parse_node(scene_load_context&, const toml::table&);
 
+node* load_node_lazy(scene_load_context& context, std::string id) {
+    auto node_table = (*context.description)["node"].as_table();
+    auto model_table = (*context.description)["model"].as_table();
+
+    if (context.nodes.contains(id)) {
+        return &context.nodes.at(id);
+    }
+
+    else if (node_table and id.starts_with("node.")) {
+        auto node_name = id.substr(5);
+        auto vt = (*node_table)[node_name].as_table();
+        auto n = parse_node(context, *vt);
+        if (n) {
+            context.nodes[id] = std::move(*n);
+            return &context.nodes.at(id);
+        }
+        else
+            return {};
+    }
+
+    else if (model_table and id.starts_with("model.")) {
+        auto model_name = id.substr(6);
+        auto vt = (*model_table)[model_name].as_table();
+        auto path = (*vt)["file"].value<std::string>();
+        if (not path) {
+            fmt::print("bad model path: {}", id);
+            return {};
+        }
+
+        auto full_path = context.scene_root.c_str() + *path;
+        context.nodes[id] = {load_model(full_path)};
+        return &context.nodes.at(id);
+    }
+
+    else {
+        fmt::print("err: couldn't locate node {}\n", id);
+        return {};
+    }
+}
+
+std::optional<node> parse_node(scene_load_context& context,
+                               const toml::table& nt) {
     material* material{};
     if (nt.contains("material")) {
         auto name = *nt["material"].value<std::string>();
@@ -200,12 +362,16 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
 
     if (nt.contains("group")) {
         std::vector<node> nodes;
-
         for (auto& [k, v] : nt) {
             if (v.is_table()) {
-                nodes.push_back(parse_node(context, *v.as_table()));
+                auto n = parse_node(context, *v.as_table());
+                if (n)
+                    nodes.push_back(std::move(*n));
             }
         }
+
+        if (nodes.empty())
+            return {};
 
         auto group = std::make_unique<node_bvh>();
         group->bvh = build_bvh(
@@ -214,7 +380,7 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
                 group->nodes.push_back(std::move(nodes[index]));
             });
 
-        return {{std::move(group)}, material};
+        return {node{{std::move(group)}, material}};
     }
 
     else if (nt.contains("instance")) {
@@ -222,8 +388,11 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
         if (nt.contains("transform") and nt["transform"].is_array())
             transform = parse_transform(*nt.at("transform").as_array());
         auto instance_of = *nt["instance"].value<std::string>();
-        assert(context.nodes.contains(instance_of));
-        return {instance(transform, context.nodes.at(instance_of)), material};
+        auto n = load_node_lazy(context, instance_of);
+        if (n)
+            return {node{instance(transform, *n), material}};
+        else
+            return {};
     }
 
     else if (nt.contains("triangle")) {
@@ -232,10 +401,41 @@ node parse_node(const scene_load_context& context, const toml::table& nt) {
         t->A = parse_vec3<Float>(toml::node_view<toml::node>(vx[0]));
         t->B = parse_vec3<Float>(toml::node_view<toml::node>(vx[1]));
         t->C = parse_vec3<Float>(toml::node_view<toml::node>(vx[2]));
-        return {std::move(t), material};
+        if (nt.contains("uv")) {
+            auto uv = *nt["uv"].as_array();
+            t->uv[0] = parse_vec2<Float>(toml::node_view<toml::node>(uv[0]));
+            t->uv[1] = parse_vec2<Float>(toml::node_view<toml::node>(uv[1]));
+            t->uv[2] = parse_vec2<Float>(toml::node_view<toml::node>(uv[2]));
+        }
+        return {node{std::move(t), material}};
     }
 
-    return {};
+    else {
+        fmt::print("err: couldn't parse world node\n", nt.source());
+        return {};
+    }
+}
+
+light_source parse_light(const scene_load_context&, const toml::table& nt) {
+    if (not nt.contains("type")) {
+        fmt::print("err: couldn't parse light node\n", nt.source());
+        return {};
+    }
+
+    auto type = *nt["type"].value<std::string>();
+
+    if (type == "distant") {
+        auto from = parse_vec3<Float>(nt["from"]);
+        auto to = parse_vec3<Float>(nt["to"]);
+        auto towards = (from - to).normalized();
+        auto value = parse_vec3<Float>(nt["value"]);
+        return {light_source{distant_light{towards, value}}};
+    }
+
+    else {
+        fmt::print("err: couldn't parse light node\n", nt.source());
+        return {};
+    }
 }
 
 scene load_scene(std::string path) {
@@ -253,14 +453,14 @@ scene load_scene(std::string path) {
         film.method = integrator::scatter;
     else if (method == "light")
         film.method = integrator::light;
-    else if (method == "brute_force")
+    else if (method == "brute-force")
         film.method = integrator::brute_force;
     else
         throw std::runtime_error(
             fmt::format("bad integration method {}", method));
 
     auto sampler =
-        config["film"]["sampler"].value_or<std::string>("stratified");
+        config["film"]["sampler"].value_or<std::string>("independent");
     if (sampler == "independent")
         film.sampler = sampler::independent;
     else if (sampler == "stratified")
@@ -282,27 +482,15 @@ scene load_scene(std::string path) {
     auto cam_towards = parse_vec3<Float>(cam_config["towards"]);
     auto cam_up = parse_vec3<Float>(cam_config["up"]);
 
-    auto view = orthographic_camera(vec2f{film.resolution}, cam_scale, cam_pos,
-                                    cam_towards, cam_up);
-
-    auto& nodes = context.nodes;
-    auto& materials = context.materials;
-
-    auto model_table = config["model"].as_table();
-    if (model_table)
-        for (auto [k, v] : *model_table) {
-            auto vt = v.as_table();
-            if (not vt)
-                continue;
-
-            auto path = (*vt)["file"].value<std::string>();
-            if (not path)
-                continue;
-
-            auto full_path = context.scene_root.c_str() + *path;
-            auto m = load_model(full_path);
-            nodes["model." + std::string(k.data())] = node{std::move(m)};
-        }
+    std::unique_ptr<camera> view;
+    if (cam_type == "orthographic")
+        view = std::make_unique<orthographic_camera>(
+            vec2f{film.resolution}, cam_scale, cam_pos, cam_towards, cam_up);
+    else if (cam_type == "perspective")
+        view = std::make_unique<perspective_camera>(
+            vec2f{film.resolution}, cam_scale, cam_pos, cam_towards, cam_up);
+    else
+        throw std::runtime_error(fmt::format("bad camera type {}", cam_type));
 
     auto texture_table = config["texture"].as_table();
     if (texture_table)
@@ -313,6 +501,7 @@ scene load_scene(std::string path) {
             parse_texture_definition(context, name.data(), *vt);
         }
 
+    auto& materials = context.materials;
     auto material_table = config["material"].as_table();
     if (material_table)
         for (auto [name, v] : *material_table) {
@@ -322,21 +511,20 @@ scene load_scene(std::string path) {
             parse_material(context, *material_table, name.data(), *vt);
         }
 
-    auto node_table = config["node"].as_table();
-    if (node_table)
-        for (auto& [k, v] : *config["node"].as_table()) {
-            auto vt = v.as_table();
-            if (not vt)
-                continue;
-
-            auto name = "node." + std::string(k.data());
-            nodes[name] = parse_node(context, *vt);
-        }
+    std::vector<light_source> lights;
+    auto light = config["light"].as_array();
+    if (light) {
+        for (auto& l : *light)
+            lights.push_back(parse_light(context, *l.as_table()));
+    }
 
     std::vector<node> root_nodes;
     auto world = *config["world"].as_array();
-    for (auto& x : world)
-        root_nodes.push_back(parse_node(context, *x.as_table()));
+    for (auto& x : world) {
+        auto n = parse_node(context, *x.as_table());
+        if (n)
+            root_nodes.push_back(std::move(*n));
+    }
 
     auto root = std::make_unique<node_bvh>();
     root->bvh = build_bvh(
@@ -354,9 +542,10 @@ scene load_scene(std::string path) {
 
     return scene{
         .film = film,
-        .root = node{std::move(root)},
-        .view = camera{view},
+        .root = {std::move(root)},
+        .view = std::move(view),
         .materials = std::move(mats_vec),
+        .lights = std::move(lights),
         .assets = std::move(assets),
         .images = std::move(context.images),
     };

@@ -8,7 +8,7 @@ public:
     T x, y, z;
 
     vec3() : x(0), y(0), z(0) {}
-    vec3(T a) : x(a), y(a), z(a) {}
+    explicit vec3(T a) : x(a), y(a), z(a) {}
     vec3(T vx, T vy, T zy) : x(vx), y(vy), z(zy) {}
 
     vec3 operator+(const vec3& rhs) const;

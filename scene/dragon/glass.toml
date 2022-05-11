@@ -3,11 +3,11 @@ method = "path"
 resolution = [600, 600]
 supersampling = 1024
 global_radiance = 0
-depth = 24
+depth = 3
 
 [camera]
 type = "orthographic"
-scale = 0.9
+scale = 1
 position = [5, 4, -4]
 towards = [0.0, 0.2, 0.1]
 up = [0.001, 1, 0]
@@ -17,7 +17,6 @@ file = "../sphere.ply"
 [material.light]
 type = "emissive"
 light = [8, 8, 8]
-[node.light]
 [[world]]
 material = "light"
 instance = "model.sphere"

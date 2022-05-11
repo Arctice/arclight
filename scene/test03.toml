@@ -1,152 +1,47 @@
 
 [film]
 method = "path"
-resolution = [600, 600]
-supersampling = 64
-global_radiance = 0.5
+resolution = [400, 400]
+supersampling = 8
+global_radiance = 0
 
 [camera]
 type = "orthographic"
-scale = 3
-position = [0, -100, 100]
+scale = 8
+position = [-4, -8, 5]
 towards = [0, 0, 0]
 up = [0, 0, 1]
 
-# [model.sphere]
-# file = "sphere.ply"
-# [node.item]
-# transform = [["scale", 0.4], ["translate", [0, -1, 1]]]
-# instance = "model.sphere"
+[model.sphere]
+file = "sphere.ply"
 
-[model.bunny]
-file = "bunny/bun_zipper_res4.ply"
-[node.item]
-transform = [ ["scale", 6], ["rotate-x", -1.57], ["translate", [0.1, -1.4, 1]]]
-instance = "model.bunny"
-
-[[world]]
-triangle = [[-100, -100, 0], [100, -100, 0], [-100, 100, 0]]
-[[world]]
-triangle = [[100, -100, 0], [100, 100, 0], [-100, 100, 0]]
-
-[material.simpleR]
-type = "lambertian"
-reflectance = [0.96, 0, 0]
-
-[material.simpleG]
-type = "lambertian"
-reflectance = [0, 0.96, 0]
-
-[material.simpleB]
-type = "lambertian"
-reflectance = [0, 0, 0.96]
-
-[material.simpleL]
+[material.light]
 type = "emissive"
-light = [2, 2, 2]
+light = [4, 4, 4]
+
+[node.light]
+instance = "model.sphere"
+material = "light"
 
 [[world]]
-material = "simpleR"
-transform = [["translate", [0, 3, 0]]]
-instance = "node.item"
+triangle = [[-10, -10, -5], [10, -10, -5], [-10, 10, -5]]
+[[world]]
+triangle = [[10, -10, -5], [10, 10, -5], [-10, 10, -5]]
 
 [[world]]
-material = "simpleG"
-transform = [["translate", [1, 3, 0]]]
-instance = "node.item"
+instance = "node.light"
+transform = [["translate", [4, -3, 0]]]
 
 [[world]]
-material = "simpleB"
-transform = [["translate", [2, 3, 0]]]
-instance = "node.item"
+instance = "node.light"
+transform = [["translate", [-2, -2, 0]]]
 
 [[world]]
-material = "simpleL"
-transform = [["translate", [-1, 3, 0]]]
-instance = "node.item"
-
-
-[material.mirror]
-type = "specular"
-refraction = [10, 10, 10]
-absorption = [0.1, 0.1, 0.1]
-transmission = [1, 1, 1]
-
-[[world]]
-material = "mirror"
-transform = [["translate", [2, 2, 0]]]
-instance = "node.item"
-
-[material.copper]
-type = "glossy"
-roughness = 0.25
-refraction = [0.271, 0.677, 1.316]
-absorption = [3.61, 2.62, 2.29]
-
-[[world]]
-material = "copper"
-transform = [["translate", [1, 2, 0]]]
-instance = "node.item"
-
-[material.diamond]
-type = "specular"
-roughness = 0.4
-refraction = [2.4, 2.4, 2.4]
-absorption = [0, 0, 0]
-transmission = [1, 1, 1]
-
-[[world]]
-material = "diamond"
-transform = [["translate", [0, 2, 0]]]
-instance = "node.item"
-
-[material.blinn-phong]
-type = "blinn-phong"
-sharpness = 16
-diffuse = 0.1
-diffuse_color = [0.4, 0.4, 0.1]
-specular_color = [0.6, 0.3, 0.2]
-
-[[world]]
-material = "blinn-phong"
-transform = [["translate", [-1, 2, 0]]]
-instance = "node.item"
-
-
-[material.plastic-diffuse]
-type = "lambertian"
-reflectance = [0.4, 0.5, 0.6]
-
-[[world]]
-material = "plastic-diffuse"
+instance = "node.light"
 transform = [["translate", [2, 1, 0]]]
-instance = "node.item"
-
-[material.plastic-gloss]
-type = "specular"
-absorption = [0, 0, 0]
-refraction = [0.4, 0.4, 0.4]
-transmission = [1, 1, 1]
 
 [[world]]
-material = "plastic-gloss"
-transform = [["translate", [1, 1, 0]]]
-instance = "node.item"
-
-[material.glass]
-type = "specular"
-absorption = [0, 0, 0]
-refraction = [1.5, 1.5, 1.5]
-transmission = [1, 1, 1]
-
-[material.plastic]
-type = "coat"
-weight = 1
-coat = "glass"
-base = "plastic-diffuse"
+instance = "node.light"
+transform = [["translate", [-3, 3, 0]]]
 
 
-[[world]]
-material = "plastic"
-transform = [["translate", [0, 1, 0]]]
-instance = "node.item"
