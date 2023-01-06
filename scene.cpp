@@ -180,9 +180,10 @@ template <class N> texture parse_texture(scene_load_context& context,
                 assert(context.textures.contains(name));
                 return context.textures.at(name);
             }
-            else
-                throw std::runtime_error(
-                    fmt::format("missing texture {}", **v.as_string()));
+            else {
+                fmt::print("err: unknown texture {}\n", **v.as_string());
+                return checkerboard_texture{};
+            }
         }
     }
     else if (v.is_array())
@@ -356,8 +357,10 @@ std::optional<node> parse_node(scene_load_context& context,
     material* material{};
     if (nt.contains("material")) {
         auto name = *nt["material"].value<std::string>();
-        assert(context.materials.contains(name));
-        material = context.materials.at(name).get();
+        if (context.materials.contains(name))
+            material = context.materials.at(name).get();
+        else
+            fmt::print("err: unknown material {}\n", name);
     }
 
     if (nt.contains("group")) {

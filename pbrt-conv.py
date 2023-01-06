@@ -382,7 +382,8 @@ class Context:
     def push_node(self, node):
         material = None
         if 'material' in self.state:
-            material = self.state['material']
+            material = self.state.get('area-light', False)
+            material = material or self.state['material']
             if 'alpha' in self.state:
                 A = {
                     'type': 'alpha',
@@ -746,6 +747,7 @@ class Context:
             material = self.convert_material(v)
             self.materials[name] = material
             self.state['material'] = name
+            self.state['area-light'] = name
 
         elif (t == 'Shape' and v['_type'] in ('trianglemesh', 'loopsubdiv')
               and self.world is not None):
