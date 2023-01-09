@@ -1974,6 +1974,7 @@ int main(int argc, char** argv) {
 // stratified sampler still gets stuck
 // perspective camera is a bit wrong
 // convergence metering
+// mishandling max_t somewhere in path trace
 // bdpt
 // add a --help
 // conv:

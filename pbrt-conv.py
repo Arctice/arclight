@@ -74,14 +74,22 @@ def parse_boolean(tokens):
         raise Exception(f'parse_boolean {ss}')
 
 
+def next_type(tokens):
+    for i in range(len(tokens) - 1, -1, -1):
+        t = tokens[i]
+        if t[0] in ['STRING', 'NUMBER']:
+            return t[0]
+    assert (False)
+
+
 def parse_param(tokens):
     if not tokens[-1][0] == 'STRING':
         return False
     t, name = tokens.pop()[1].strip('"').split()
-    if t == 'spectrum' and tokens[-1][0] == 'STRING':
+    if t == 'spectrum' and next_type(tokens) == 'STRING':
         return (name, 'spectrum', parse_string(tokens))
-    if t in ('integer', 'float', 'point', 'normal', 'rgb', 'color', 'spectrum',
-             'vector'):
+    if t in ('integer', 'float', 'point', 'point2', 'point3', 'normal', 'rgb',
+             'color', 'spectrum', 'vector', 'vector3'):
         return (name, parse_number(tokens))
     if t in ('blackbody'):
         return (name, t, parse_number(tokens))
@@ -178,10 +186,16 @@ def parse_next(context, tokens):
         name = parse_string(tokens).strip('"')
         return ('NamedMaterial', name)
     if x in ('Film', 'Camera', 'Sampler', 'Integrator', 'AreaLightSource',
-             'Shape', 'Material', 'MakeNamedMaterial', 'LightSource'):
+             'Shape', 'Material', 'MakeNamedMaterial', 'LightSource',
+             'MakeNamedMedium'):
         return (x, parse_params(tokens))
+    if x == 'MediumInterface':
+        a, b = parse_string(tokens), parse_string(tokens),
+        print(f'ignoring {x}')
+        return
     if x == 'PixelFilter':
         px_filter = parse_string(tokens)
+        print(f'ignoring {x}')
         return
     if x == 'Include':
         rpath = parse_string(tokens)
@@ -339,7 +353,7 @@ def transform_to_camera(T):
 
 
 def trianglemesh_to_ply(t):
-    indices = t['indices']
+    indices = t.get('indices', [0, 1, 2, 1, 2, 3])
     indices = [int(i) for i in indices]
     vertices = t['P']
     assert (0 == len(indices) % 3)
@@ -535,19 +549,17 @@ class Context:
         return tomlkit.dumps(scene)
 
     def convert_material(self, m):
+
         if m['type'] == 'matte':
             material = {
                 'type': 'lambertian',
                 'reflectance': m.get('Kd', [0.5, 0.5, 0.5])
             }
 
-        elif m['type'] == 'diffuse':
+        elif m['type'] == 'area-light-diffuse':
             L = m.get('L', [1, 1, 1])
             scale = m.get('scale', [1, 1, 1])
-            material = {
-                'type': 'emissive',
-                'light': [l * s for l, s in zip(L, scale)]
-            }
+            material = {'type': 'emissive', 'light': L, 'scale': scale}
 
         elif m['type'] == 'translucent':
             material = {
@@ -563,8 +575,8 @@ class Context:
             coat_type = 'glossy'
             if type(roughness) is float and m.get('remaproughness', True):
                 roughness **= 0.5
-                if roughness < 0.001:
-                    coat_type = 'specular'
+            if type(roughness) is float and roughness < 0.001:
+                coat_type = 'specular'
             D = {
                 'type': 'lambertian',
                 'reflectance': m.get('Kd', [0.5, 0.5, 0.5]),
@@ -596,14 +608,14 @@ class Context:
             roughness = m.get('uroughness', False) or m.get('roughness', 0.01)
             if type(roughness) is float and m.get('remaproughness', True):
                 roughness **= 0.5
-                if roughness < 0.001:
-                    gloss_type = 'specular'
+            if type(roughness) is float and roughness < 0.001:
+                gloss_type = 'specular'
             material = {
                 'type': gloss_type,
                 'transmission': 0,
                 'roughness': roughness,
-                'refraction': m.get('eta', [0.159, 0.145, 0.1135]),
-                'absorption': m.get('k', [3.929, 3.19, 2.38])
+                'refraction': m.get('eta', ['spectrum', 'metal-Cu-eta']),
+                'absorption': m.get('k', ['spectrum', 'metal-Cu-k']),
             }
 
         elif m['type'] == 'glass':
@@ -637,16 +649,20 @@ class Context:
             }
 
         elif m['type'] == 'mix':
+            if 'materials' in m:
+                a, b = m['materials']
+            else:
+                a, b = m['namedmaterial1'], m['namedmaterial2']
             material = {
                 'type': 'coat',
                 'weight': m.get('amount', 0.5),
-                'coat': m['namedmaterial1'],
-                'base': m['namedmaterial2'],
+                'coat': a,
+                'base': b,
             }
 
-        elif m['type'] == 'fourier':
+        elif m['type'] in ['fourier', 'measured']:
             # make up something shiny
-            print(f'ignored fourier bsdf {m}')
+            print(f'ignored {m["type"]} bsdf {m}')
             D = {
                 'type': 'lambertian',
                 'reflectance': m.get('Kd', [0.6, 0.6, 0.6]),
@@ -668,6 +684,138 @@ class Context:
                 'weight': 1,
                 'coat': glossy,
                 'base': diffuse
+            }
+
+        # pbrt-v4
+        elif m['type'] == 'conductor':
+            gloss_type = 'glossy'
+            roughness = m.get('uroughness', False) or m.get('roughness', 0)
+            if type(roughness) is float and m.get('remaproughness', True):
+                roughness **= 0.5
+            if type(roughness) is float and roughness < 0.001:
+                gloss_type = 'specular'
+            if 'reflectance' in m:
+                print('ignoring reflectance in conductor')
+            material = {
+                'type': gloss_type,
+                'transmission': 0,
+                'roughness': roughness,
+                'refraction': m.get('eta', ['spectrum', 'metal-Cu-eta']),
+                'absorption': m.get('k', ['spectrum', 'metal-Cu-k']),
+            }
+
+        elif m['type'] == 'dielectric':
+            gloss_type = 'glossy'
+            roughness = m.get('uroughness', False) or m.get('roughness', 0)
+            if type(roughness) is float and m.get('remaproughness', True):
+                roughness **= 0.5
+            if type(roughness) is float and roughness < 0.001:
+                gloss_type = 'specular'
+            material = {
+                'type': gloss_type,
+                'transmission': 1,
+                'roughness': roughness,
+                'refraction': m.get('eta', [1.5, 1.5, 1.5]),
+                'absorption': m.get('k', [0, 0, 0])
+            }
+
+        elif m['type'] == 'diffuse':
+            material = {
+                'type': 'lambertian',
+                'reflectance': m.get('reflectance', [0.5, 0.5, 0.5])
+            }
+
+        elif m['type'] == 'diffusetransmission':
+            material = {
+                'type': 'translucent',
+                'reflectance': m.get('reflectance', [0.25, 0.25, 0.25]),
+                'transmission': m.get('transmit', [0.25, 0.25, 0.25])
+            }
+
+        elif m['type'] == 'coateddiffuse':
+            # albedo = m.get('albedo', 0)  # ignored
+            # g = m.get('g', 0)  # ignored
+            roughness = m.get('roughness', 0)
+            coat_type = 'glossy'
+            if type(roughness) is float and m.get('remaproughness', True):
+                roughness **= 0.5
+            if type(roughness) is float and roughness < 0.001:
+                coat_type = 'specular'
+            D = {
+                'type': 'lambertian',
+                'reflectance': m.get('reflectance', [0.5, 0.5, 0.5]),
+            }
+            eta = [1.5, 1.5, 1.5]
+            S = {
+                'type': coat_type,
+                'transmission': 1,
+                'roughness': roughness,
+                'refraction': eta,
+                'absorption': [0, 0, 0],
+            }
+            N = str(len(self.materials))
+            diffuse = '_mix_diffuse' + N
+            self.materials[diffuse] = self.material_fixup(D)
+            glossy = '_mix_glossy' + N
+            self.materials[glossy] = self.material_fixup(S)
+            specularity = 1
+            material = {
+                'type': 'coat',
+                'weight': specularity,
+                'coat': glossy,
+                'base': diffuse
+            }
+
+        elif m['type'] == 'coatedconductor':
+            # albedo = m.get('albedo', 0)  # ignored
+            # g = m.get('g', 0)  # ignored
+
+            i_roughness = m.get('interface.roughness', 0)
+            c_roughness = m.get('conductor.roughness', 0)
+            coat_type = 'glossy'
+            base_type = 'glossy'
+            if type(i_roughness) is float and m.get('interface.remaproughness',
+                                                    True):
+                i_roughness **= 0.5
+            if type(c_roughness) is float and m.get('conductor.remaproughness',
+                                                    True):
+                c_roughness **= 0.5
+            if type(i_roughness) is float and i_roughness < 0.001:
+                coat_type = 'specular'
+            if type(c_roughness) is float and c_roughness < 0.001:
+                base_type = 'specular'
+
+            if 'reflectance' in m:
+                print('ignoring reflectance in coatedconductor')
+            C = {
+                'type': 'glossy',
+                'refraction': m.get('conductor.eta',
+                                    ['spectrum', 'metal-Cu-eta']),
+                'absorption': m.get('conductor.k', ['spectrum', 'metal-Cu-k']),
+                'transmission': 0,
+                'roughness': c_roughness,
+            }
+
+            eta = [1.5, 1.5, 1.5]
+            S = {
+                'type': coat_type,
+                'transmission': 1,
+                'roughness': i_roughness,
+                'refraction': eta,
+                'absorption': [0, 0, 0],
+            }
+
+            N = str(len(self.materials))
+            conductor = '_mix_conductor' + N
+            self.materials[conductor] = self.material_fixup(C)
+            glossy = '_mix_glossy' + N
+            self.materials[glossy] = self.material_fixup(S)
+            specularity = 1
+            material = {
+                'type': 'coat',
+                'weight': specularity,
+                'coat': glossy,
+                'base': conductor
             }
 
         else:
@@ -709,9 +857,9 @@ class Context:
                 self.camera['position'] = position
                 self.camera['towards'] = towards
                 self.camera['up'] = up
-            type = v['_type']
-            self.camera['type'] = type
-            default_scale = 60 if (type == 'perspective') else 8
+            type_ = v['_type']
+            self.camera['type'] = type_
+            default_scale = 60 if (type_ == 'perspective') else 8
             self.camera['scale'] = v.get('fov', default_scale)
         elif t == 'Sampler':
             self.film['supersampling'] = v.get('pixelsamples', 16)
@@ -727,6 +875,9 @@ class Context:
             material = self.convert_material(v)
             self.materials[name] = material
 
+        elif t == 'MakeNamedMedium':
+            print(f'ignored MakeNamedMedium {v}')
+
         elif t == 'Texture':
             name = self.new_texture_name(v['name'])
             if v['_type'] == 'imagemap':
@@ -740,8 +891,8 @@ class Context:
             elif v['_type'] == 'scale':
                 self.textures[name] = {
                     'type': 'product',
-                    'A': v.get('tex1', [1, 1, 1]),
-                    'B': v.get('tex2', [1, 1, 1])
+                    'A': v.get('tex1') or v.get('tex', [1, 1, 1]),
+                    'B': v.get('tex2') or v.get('scale', [1, 1, 1]),
                 }
             elif v['_type'] == 'mix':
                 print(f'used product texture instead of lerp for {v}')
@@ -778,6 +929,8 @@ class Context:
         elif t == 'LightSource':
             L = v.get('L', [1, 1, 1])
             scale = v.get('scale', [1, 1, 1])
+            if type(scale) is float:
+                scale = [scale] * 3
             if v['_type'] == 'infinite':
                 self.film['global_radiance'] = [
                     l * s for l, s in zip(L, scale)
@@ -789,7 +942,8 @@ class Context:
                     'type': 'distant',
                     'from': from_,
                     'to': to_,
-                    'value': [l * s for l, s in zip(L, scale)]
+                    'value': L,
+                    'scale': scale,
                 }
                 light = self.material_fixup(light)
                 self.lights.append(light)
@@ -799,13 +953,14 @@ class Context:
 
         elif t == 'AreaLightSource':
             name = '_L' + str(len(self.materials))
-            v['type'] = v['_type']
+            v['type'] = 'area-light-diffuse'  #v['_type']
             material = self.convert_material(v)
             self.materials[name] = material
             self.state['material'] = name
             self.state['area-light'] = name
 
-        elif (t == 'Shape' and v['_type'] in ('trianglemesh', 'loopsubdiv')
+        elif (t == 'Shape'
+              and v['_type'] in ('trianglemesh', 'bilinearmesh', 'loopsubdiv')
               and self.world is not None):
             ref = f'mesh{len(self.models)+1}'
             ref = self.new_unique_name(ref)
@@ -888,10 +1043,36 @@ class Context:
                 material[k] = self.convert_blackbody(v[1])
             if type(v) == str and v in self.renames:
                 material[k] = self.renames[v]
+        if material['type'] == 'emissive' and 'scale' in material:
+            scale = material['scale']
+            if type(scale) is float:
+                scale = [scale] * 3
+            L = material['light']
+            L = [l * s for l, s in zip(L, scale)]
+            material['light'] = L
         return material
 
-    def convert_spectrum(self, path):
-        path = self.path.parent.joinpath(path)
+    def convert_spectrum(self, name):
+        builtin = {
+            'metal-Ag-eta': [0.159, 0.145, 0.135],
+            'metal-Ag-k': [3.929, 3.19, 2.38],
+            'metal-Au-eta': [0.16, 0.35, 1.5],
+            'metal-Au-k': [4, 2.5, 1.9],
+            'metal-Al-eta': [1.345, 0.965, 0.61],
+            'metal-Al-k': [7.474, 6.4, 5.3],
+            'metal-Cu-eta': [0.271, 0.677, 1.316],
+            'metal-Cu-k': [3.61, 2.62, 2.29],
+            'metal-CuZn-eta': [0.271, 0.677, 1.316],
+            'metal-CuZn-k': [3.61, 2.62, 2.29],
+        }
+        # -iron {2.91, 2.95, 2.584}, {3.09, 2.93, 2.767}
+        # -lead {1.91, 1.83, 1.44}, {3.51, 3.4, 3.18}
+        # -platinum {2.37, 2.08, 1.84}, {4.26, 3.71, 3.136}
+
+        if name in builtin:
+            return builtin[name]
+
+        path = self.path.parent.joinpath(name)
         values = [l.strip().split() for l in open(path, 'r').readlines()]
         values = [l for l in values if '#' not in l]
         values = [(float(x[0]), float(x[1])) for x in values]
@@ -901,9 +1082,15 @@ class Context:
         return [red, green, blue]
 
     def convert_blackbody(self, value):
-        r, g, b = kelvin_table[int(value[0] / 100) * 100]
-        L = value[1]
-        return [r * L, g * L, b * L]
+        L = value
+        scale = 1
+        if L is list:
+            if len(L) == 2:
+                L, scale = L
+            else:
+                L = L[0]
+        r, g, b = kelvin_table[int(L / 100) * 100]
+        return [r * scale, g * scale, b * scale]
 
 
 args = argparse.ArgumentParser()
