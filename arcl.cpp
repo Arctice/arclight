@@ -1809,9 +1809,13 @@ void ipc_update_stream(ipc::tev* ipc, image* image, std::string ipc_name) {
 
 int main(int argc, char** argv) {
     auto scene_path = [argc, argv]() -> std::optional<std::string> {
-        if (argc <= 1)
-            return {};
-        return {{argv[1]}};
+        for (auto i{1}; i < argc; ++i) {
+            auto arg = std::string{argv[i]};
+            if (arg.substr(0, 1) == "-")
+                continue;
+            return {arg};
+        }
+        return {};
     }();
 
     if (not scene_path) {
@@ -1822,7 +1826,7 @@ int main(int argc, char** argv) {
     auto cmd_arg = [argc,
                     argv](std::string name) -> std::pair<bool, std::string> {
         name = "-" + name;
-        for (auto i{2}; i < argc; ++i) {
+        for (auto i{1}; i < argc; ++i) {
             auto arg = std::string{argv[i]};
             if (arg == name)
                 return {true, ""};

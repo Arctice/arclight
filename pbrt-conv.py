@@ -140,6 +140,10 @@ def parse_next(context, tokens):
     if x == 'ReverseOrientation':
         print(f'ignoring {x}')
         return
+    if x == 'CoordSysTransform':
+        name = parse_string(tokens)
+        print(f'ignoring {x} {name}')
+        return
     if x == 'AttributeBegin':
         context.attr_begin()
         return
@@ -325,9 +329,54 @@ kelvin_table = {
 }
 
 
+def transform_to_camera(T):
+    import numpy as np
+    T = np.linalg.inv(np.array(T).reshape(4, 4).transpose())
+    origin = T @ [0, 0, 0, 1]
+    towards = T @ [0, 0, 1, 1]
+    up = T @ [0, 1, 0, 0]
+    return list(origin), list(towards), list(up)
+
+
+def trianglemesh_to_ply(t):
+    indices = t['indices']
+    indices = [int(i) for i in indices]
+    vertices = t['P']
+    assert (0 == len(indices) % 3)
+    assert (0 == len(vertices) % 3)
+    normals = t.get('N')
+    texcoords = t.get('uv') or t.get('st')
+    ply = 'ply\nformat ascii 1.0\n'
+    ply += f'element vertex {len(vertices) // 3}\n'
+    ply += 'property float x\nproperty float y\nproperty float z\n'
+    if normals:
+        ply += 'property float nx\nproperty float ny\nproperty float nz\n'
+    if texcoords:
+        ply += 'property float u\nproperty float v\n'
+    ply += f'element face {len(indices) // 3}\n'
+    ply += 'property list uint uint vertex_indices\n'
+    ply += 'end_header\n'
+    for idx in range(0, len(vertices) // 3):
+        vx = vertices[idx * 3:idx * 3 + 3]
+        ply += f'{vx[0]} {vx[1]} {vx[2]}'
+        if normals:
+            ns = normals[idx * 3:idx * 3 + 3]
+            ply += f' {ns[0]} {ns[1]} {ns[2]}'
+        if texcoords:
+            uv = texcoords[idx * 2:idx * 2 + 2]
+            ply += f' {uv[0]} {uv[1]}'
+        ply += '\n'
+    for idx in range(0, len(indices), 3):
+        idxs = indices[idx:idx + 3]
+        ply += f'3 {idxs[0]} {idxs[1]} {idxs[2]}\n'
+    return ply
+
+
 class Context:
     def __init__(self, path):
         self.path = pathlib.Path(path)
+        self.data_path = self.path.parent.joinpath('arcl-data')
+        self.data_path.mkdir(exist_ok=True)
         self.state = ChainMap()
         self.film = {}
         self.camera = {}
@@ -653,6 +702,13 @@ class Context:
             yres = v.get('yresolution', 600)
             self.film['resolution'] = (xres, yres)
         elif t == 'Camera':
+            if not 'position' in self.camera:
+                T = (self.state.get('transform', []))
+                assert (len(T) == 1 and T[0][0] == 'matrix')
+                position, towards, up = transform_to_camera(T[0][1])
+                self.camera['position'] = position
+                self.camera['towards'] = towards
+                self.camera['up'] = up
             type = v['_type']
             self.camera['type'] = type
             default_scale = 60 if (type == 'perspective') else 8
@@ -751,30 +807,20 @@ class Context:
 
         elif (t == 'Shape' and v['_type'] in ('trianglemesh', 'loopsubdiv')
               and self.world is not None):
-            ref = f'mesh{random.randint(1000, 9999)}'
+            ref = f'mesh{len(self.models)+1}'
             ref = self.new_unique_name(ref)
-            self.object_begin(ref)
-            points = v['P']
-            texcoords = v.get('uv', None) or v.get('st', None)
-            indices = [int(i) for i in v['indices']]
-            vertices = []
-            vertex_uv = []
-            for idx in range(0, len(points), 3):
-                vertices.append(points[idx:idx + 3])
-            if texcoords:
-                for idx in range(0, len(texcoords), 2):
-                    vertex_uv.append(texcoords[idx:idx + 2])
-            for idx in range(0, len(indices), 3):
-                a, b, c = indices[idx:idx + 3]
-                A, B, C = vertices[a], vertices[b], vertices[c]
-                triangle = {'triangle': [A, B, C]}
-                if texcoords:
-                    At, Bt, Ct = vertex_uv[a], vertex_uv[b], vertex_uv[c]
-                    triangle['uv'] = [At, Bt, Ct]
-                self.add_node(triangle)
-            self.object_end()
-            mesh = {'instance': ('node', ref)}
+            ply_path = f'{ref}.ply'
+            self.models[ref] = 'arcl-data/' + ply_path
+            ply_path = self.data_path.joinpath(ply_path)
+            ply = trianglemesh_to_ply(v)
+            with open(ply_path, 'w') as out:
+                out.write(ply)
+            mesh = {'instance': ('model', ref)}
+            if 'alpha' in v:
+                self.state['alpha'] = v['alpha']
             self.push_node(mesh)
+            if 'alpha' in v:
+                self.state.pop('alpha')
 
         elif (t == 'Shape' and v['_type'] in ['sphere', 'disk']
               and self.world is not None):
