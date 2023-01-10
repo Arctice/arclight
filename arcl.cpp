@@ -344,9 +344,10 @@ std::optional<intersection> intersect(const node_instance& i, const ray& r,
     auto hit = intersect(i.n, ri, max_t);
     if (hit) {
         hit->normal = Ti.normal(hit->normal).normalized();
+        hit->shading.normal = Ti.normal(hit->shading.normal).normalized();
+
         hit->shading.dpdu = i.T.vector(hit->shading.dpdu);
         hit->shading.dpdv = i.T.vector(hit->shading.dpdv);
-        hit->shading.normal = Ti.normal(hit->shading.normal).normalized();
     }
     return hit;
 }
@@ -458,6 +459,10 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
     auto V = Ax * Cy - Ay * Cx;
     auto W = Bx * Ay - By * Ax;
 
+    // if (U == 0 || V == 0 || W == 0)
+    // // should fall back to double precision
+    //     fmt::print("!\n");
+
     if ((U < 0 or V < 0 or W < 0) and (U > 0 or V > 0 or W > 0))
         return {};
 
@@ -470,10 +475,17 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
     auto Cz = Sz * C[kz];
     auto T = U * Az + V * Bz + W * Cz;
 
-    if ((det < 0 and T >= 0) or (det > 0 and T <= 0))
-        return {};
+    auto hit_t = std::numeric_limits<float>::infinity();
+    // if ((det < 0 and (T >= 0 or T < hit_t * det)) or
+    //     (det > 0 and (T <= 0 or T > hit_t * det)))
+    //     return {};
 
-    auto t = T / det;
+    auto xorf_T = std::abs(T);
+    if (std::signbit(T) != std::signbit(det))
+        xorf_T = -xorf_T;
+    auto near = 0.01;
+    if ((xorf_T < near * std::abs(det)) or (xorf_T > hit_t * std::abs(det)))
+        return {};
 
     vec2f uv[3] = {{0, 0}, {1, 0}, {1, 1}};
     vec2f duvAC = uv[0] - uv[2];
@@ -491,6 +503,7 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
         U = U / det;
         V = V / det;
         W = W / det;
+        auto t = T / det;
 
         auto n = dpdu.cross(dpdv).normalized();
         auto ns = n;
@@ -1590,7 +1603,7 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
                     if (not area_light)
                         continue;
                     auto d = intersect(area_light->node, r,
-                                       intersection->distance + gamma(32));
+                                       std::numeric_limits<float>::infinity());
                     if (d and d->distance == intersection->distance) {
                         auto light_pdf =
                             sample_light(scene, *previous_intersection, light,
@@ -1975,6 +1988,11 @@ int main(int argc, char** argv) {
 // perspective camera is a bit wrong
 // convergence metering
 // mishandling max_t somewhere in path trace
+// an empty white scene gets reconstructed badly
+// conductors are wrong, again
+// some self-intersection issues apparent in zero-day and other
+// scenes, temporarily fudged with a minimum ray distance
+// add better light source selection
 // bdpt
 // add a --help
 // conv:
