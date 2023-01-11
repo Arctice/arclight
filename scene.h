@@ -508,7 +508,6 @@ std::unique_ptr<node_instance> instance(const transform& T, const node& n);
 
 enum class integrator {
     brute_force,
-    light,
     scatter,
     path,
 };

@@ -13,6 +13,7 @@
 
 #include <SFML/Graphics.hpp>
 #include <cblas.h>
+#include <cassert>
 
 Float power_heuristic(Float f, Float g) { return (f * f) / (f * f + g * g); }
 
@@ -475,16 +476,10 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
     auto Cz = Sz * C[kz];
     auto T = U * Az + V * Bz + W * Cz;
 
-    auto hit_t = std::numeric_limits<float>::infinity();
-    // if ((det < 0 and (T >= 0 or T < hit_t * det)) or
-    //     (det > 0 and (T <= 0 or T > hit_t * det)))
-    //     return {};
-
-    auto xorf_T = std::abs(T);
-    if (std::signbit(T) != std::signbit(det))
-        xorf_T = -xorf_T;
-    auto near = 0.001;
-    if ((xorf_T < near * std::abs(det)) or (xorf_T > hit_t * std::abs(det)))
+    auto far = std::numeric_limits<float>::infinity();
+    auto near = 0.0;
+    if ((det < 0 and (T >= near * det or T < far * det)) or
+        (det > 0 and (T <= near * det or T > far * det)))
         return {};
 
     vec2f uv[3] = {{0, 0}, {1, 0}, {1, 1}};
@@ -1489,7 +1484,6 @@ scatter_sample sample_light(const scene& scene,
                             const intersection& intersection,
                             const distant_light& source, const ray& r, vec2f) {
     auto intersection_point = r.distance(intersection.distance);
-    auto value = source.value;
     auto towards = source.towards.normalized();
     auto visibility_check = offset_origin(
         intersection, ray{.origin = intersection_point, .direction = towards});
@@ -1498,16 +1492,16 @@ scatter_sample sample_light(const scene& scene,
     if (occluded)
         return {.probability = 0};
 
-    auto icos = (visibility_check.direction).dot(intersection.normal);
-    auto reflected = scatter(scene, intersection, r.direction * -1, towards);
-    auto L = value * reflected.value * std::abs(icos);
-
     return scatter_sample{
-        .value = L,
-        .direction = towards * -1,
-        .probability = 1,
+        .value = source.value,
+        .direction = towards,
+        .probability = 1.,
         .specular = true,
     };
+}
+
+Float light_contribution(const scene&, const distant_light& source, vec3f) {
+    return source.value.length_sq();
 }
 
 scatter_sample sample_light(const scene& scene,
@@ -1519,13 +1513,11 @@ scatter_sample sample_light(const scene& scene,
     auto [direction, sample_pdf] =
         sample_sphere(sample, bounds, intersection_point);
 
-    auto probability = 1 / (sample_pdf * scene.lights.size());
+    auto probability = 1 / sample_pdf;
 
     auto light_ray =
         offset_origin(intersection, ray{.origin = intersection_point,
                                         .direction = direction});
-
-    auto icos = (light_ray.direction).dot(intersection.normal);
 
     auto visible =
         intersect(source.node, light_ray, std::numeric_limits<Float>::max());
@@ -1536,15 +1528,7 @@ scatter_sample sample_light(const scene& scene,
     if (occluded and occluded->distance < visible->distance)
         return {.probability = probability};
 
-    auto towards = r.direction * -1;
-    auto reflected = scatter(scene, intersection, towards, light_ray.direction);
-    if (not reflected.probability)
-        return {.probability = probability};
-
     auto L = emitted_light(*visible);
-    L *= reflected.value * std::abs(icos);
-    L *= power_heuristic(probability, reflected.probability) / probability;
-
     return scatter_sample{
         .value = L,
         .direction = light_ray.direction,
@@ -1552,26 +1536,112 @@ scatter_sample sample_light(const scene& scene,
     };
 }
 
-scatter_sample sample_light(const scene& scene, const intersection& isect,
-                            const light_source& light, const ray& ray,
-                            vec2f sample) {
-    return std::visit(
-        [&](const auto& light) {
-            return sample_light(scene, isect, light, ray, sample);
-        },
-        light);
+Float light_contribution(const scene&, const node_light& source, vec3f at) {
+    auto r = source.bounds.radius;
+    auto d = (source.bounds.centre - at).length();
+    auto L = emitted_light({{}, {}, {}, {}, source.node.n.material});
+    return L.length_sq() * r / d;
 }
 
-scatter_sample sample_direct_lighting(const scene& scene, sample_sequence* rng,
-                                      const intersection& intersection,
-                                      const ray& ray) {
+scatter_sample sample_light(const scene& scene, const intersection& isect,
+                            const light_source& l, const ray& r, vec2f sample) {
+    return std::visit(
+        [&](const auto& l) { return sample_light(scene, isect, l, r, sample); },
+        l);
+}
+
+Float light_contribution(const scene& scene, const light_source& l, vec3f at) {
+    return std::visit(
+        [&](const auto& l) { return light_contribution(scene, l, at); }, l);
+}
+
+std::pair<scatter_sample, std::vector<Float>>
+sample_direct_lighting_weighted(const scene& scene, sample_sequence* rng,
+                                const intersection& intersection,
+                                const ray& ray) {
     if (scene.lights.empty())
         return {};
+
+    std::vector<Float> weights;
+    Float total_weight{};
+    auto at = ray.distance(intersection.distance);
+    for (auto& source : scene.lights) {
+        auto w = light_contribution(scene, source, at);
+        total_weight += w;
+        weights.push_back(w);
+    }
+    for (auto& w : weights) w /= total_weight;
+
+    auto roll = rng->sample_1d();
+    size_t n{};
+    for (; n < weights.size() - 1; ++n) {
+        roll -= weights[n];
+        if (0 >= roll)
+            break;
+    }
+
+    auto pdf = weights[n];
+    auto light_sample = sample_light(scene, intersection, scene.lights[n], ray,
+                                     rng->sample_2d());
+    auto probability = pdf * light_sample.probability;
+    auto towards = ray.direction * -1;
+    auto reflected =
+        scatter(scene, intersection, towards, light_sample.direction);
+
+    auto L = light_sample.value;
+    if (not light_sample.specular) {
+        L *= power_heuristic(probability, reflected.probability) / probability;
+        if (not reflected.probability)
+            return {{.probability = probability}, weights};
+    }
+    auto icos = (light_sample.direction).dot(intersection.normal);
+    L *= reflected.value * std::abs(icos);
+
+    return {scatter_sample{
+                .value = L,
+                .direction = light_sample.direction,
+                .probability = probability,
+                .specular = light_sample.specular,
+            },
+            weights};
+}
+
+std::pair<scatter_sample, std::vector<Float>>
+sample_direct_lighting_uniform(const scene& scene, sample_sequence* rng,
+                               const intersection& intersection,
+                               const ray& ray) {
+    if (scene.lights.empty())
+        return {};
+
+    std::vector<Float> weights;
+    for (size_t i{}; i < scene.lights.size(); ++i)
+        weights.push_back(1. / scene.lights.size());
     auto one_light =
         std::clamp<int>((int)(rng->sample_1d() * scene.lights.size()), 0,
                         scene.lights.size() - 1);
-    return sample_light(scene, intersection, scene.lights[one_light], ray,
-                        rng->sample_2d());
+    auto pdf = 1.0f / scene.lights.size();
+
+    auto light_sample = sample_light(
+        scene, intersection, scene.lights[one_light], ray, rng->sample_2d());
+    auto probability = pdf * light_sample.probability;
+
+    auto towards = ray.direction * -1;
+    auto reflected =
+        scatter(scene, intersection, towards, light_sample.direction);
+    if (not reflected.probability)
+        return {{.probability = probability}, weights};
+
+    auto icos = (light_sample.direction).dot(intersection.normal);
+    auto L = light_sample.value;
+    L *= reflected.value * std::abs(icos);
+    L *= power_heuristic(probability, reflected.probability) / probability;
+
+    return {{
+                .value = L,
+                .direction = light_sample.direction,
+                .probability = probability,
+            },
+            weights};
 }
 
 light path_trace(const scene& scene, sample_sequence* rng, ray r,
@@ -1583,6 +1653,7 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
     ray prev_ray{r};
     std::optional<intersection> previous_intersection;
     Float scattering_pdf{-1};
+    std::vector<Float> light_sampler_pdfs;
 
     while (true) {
         auto intersection =
@@ -1608,7 +1679,8 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
                         auto light_pdf =
                             sample_light(scene, *previous_intersection, light,
                                          prev_ray, {})
-                                .probability;
+                                .probability *
+                            light_sampler_pdfs[li];
                         Le *= power_heuristic(scattering_pdf, light_pdf);
                         L += beta * Le;
                         break;
@@ -1620,7 +1692,9 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
         if (max_depth <= depth)
             break;
 
-        auto light = sample_direct_lighting(scene, rng, *intersection, r);
+        auto [light, l_weights] =
+            sample_direct_lighting_weighted(scene, rng, *intersection, r);
+        light_sampler_pdfs = l_weights;
         if (0 < light.value.length_sq()) {
             L += beta * light.value;
         }
@@ -1668,21 +1742,6 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
     return L;
 }
 
-light light_trace(const scene& scene, sample_sequence* rng, ray r, int) {
-    auto intersection =
-        intersect(scene.root, r, std::numeric_limits<Float>::max());
-    if (not intersection)
-        return {scene.film.global_radiance};
-
-    light L{};
-
-    if (intersection->mat and is_emissive(intersection->mat))
-        return emitted_light(*intersection);
-
-    auto Ld = sample_direct_lighting(scene, rng, *intersection, r);
-    return L + Ld.value;
-}
-
 vec3f light_to_rgb(light light) {
     return {std::clamp<Float>(gamma_correct(light.x), 0, 1),
             std::clamp<Float>(gamma_correct(light.y), 0, 1),
@@ -1714,10 +1773,13 @@ struct image {
     static constexpr int max_offset{ceil(filter_radius)};
 
     void add_sample(const vec2f& position, const light& value) {
-        auto px = vec2<int>{position};
+        auto px =
+            vec2<int>{(int)std::floor(position.x), (int)std::floor(position.y)};
 
         if (not gaussian_filter) {
             auto [x, y] = px;
+            if (x < 0 or resolution.x - 1 < x or y < 0 or resolution.y - 1 < y)
+                return;
             auto offset = (y * resolution.x + x);
             auto lock = std::lock_guard{update_mutex};
             light[offset] += value;
@@ -1851,11 +1913,12 @@ int main(int argc, char** argv) {
     };
 
     auto t0 = std::chrono::system_clock::now();
+    fmt::print("loading scene: {}\n", *scene_path);
     auto scene = load_scene(*scene_path);
     auto resolution = scene.film.resolution;
     image image{resolution};
     auto dt = std::chrono::system_clock::now() - t0;
-    fmt::print("[{:.1f}s] scene({}) ready\n", dt.count() / 1000000000.,
+    fmt::print("[{:.1f}s] scene ready\n", dt.count() / 1000000000.,
                *scene_path);
 
     auto area_lights = collect_lights(&scene.root);
@@ -1869,7 +1932,6 @@ int main(int argc, char** argv) {
             return debug_trace;
         switch (scene.film.method) {
         case integrator::path: return path_trace;
-        case integrator::light: return light_trace;
         case integrator::scatter: return scatter_trace;
         case integrator::brute_force: return naive_trace;
         }
@@ -1987,14 +2049,9 @@ int main(int argc, char** argv) {
 // stratified sampler still gets stuck
 // perspective camera is a bit wrong
 // convergence metering
-// mishandling max_t somewhere in path trace
 // an empty white scene gets reconstructed badly
 // conductors are wrong, again
-// some self-intersection issues apparent in zero-day and other
-// scenes, temporarily fudged with a minimum ray distance
-// add better light source selection
+// some self-intersection issues apparent in zero-day and other scenes
+// can be fudged with a min ray distance but should investigate
 // bdpt
 // add a --help
-// conv:
-// camera transformations get ignored
-// materials cause area lights to get ignored (pbrt/veach-bidir)

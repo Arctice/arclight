@@ -139,7 +139,7 @@ def parse_next(context, tokens):
         params = []
         for _ in range(9):
             params.append(parse_number(tokens))
-        return ('Lookat', params)
+        return ('LookAt', params)
     if x == 'WorldBegin':
         context.world_begin()
         return
@@ -182,6 +182,8 @@ def parse_next(context, tokens):
     if x in ('Transform', 'ConcatTransform'):
         ts = parse_number(tokens)
         return (x, ts)
+    if x == 'Identity':
+        return (x, ())
     if x == 'NamedMaterial':
         name = parse_string(tokens).strip('"')
         return ('NamedMaterial', name)
@@ -837,11 +839,15 @@ class Context:
             T_prev = self.state.get('transform', [])
             T_next = [["matrix", v]]
             self.state['transform'] = T_next
+        elif t == 'Identity':
+            T_prev = self.state.get('transform', [])
+            T_next = []
+            self.state['transform'] = T_next
         elif t == 'ConcatTransform':
             T_prev = self.state.get('transform', [])
             T_next = [["matrix", v]] + T_prev
             self.state['transform'] = T_next
-        elif t == 'Lookat':
+        elif t == 'LookAt':
             self.camera['position'] = v[:3]
             self.camera['towards'] = v[3:6]
             self.camera['up'] = v[6:]
@@ -1054,20 +1060,19 @@ class Context:
 
     def convert_spectrum(self, name):
         builtin = {
-            'metal-Ag-eta': [0.159, 0.145, 0.135],
-            'metal-Ag-k': [3.929, 3.19, 2.38],
+            'metal-Ag-eta': [0.0569, 0.054, 0.0468],
+            'metal-Ag-k': [4.25, 3.4290, 2.8028],
             'metal-Au-eta': [0.16, 0.35, 1.5],
             'metal-Au-k': [4, 2.5, 1.9],
             'metal-Al-eta': [1.345, 0.965, 0.61],
             'metal-Al-k': [7.474, 6.4, 5.3],
             'metal-Cu-eta': [0.271, 0.677, 1.316],
             'metal-Cu-k': [3.61, 2.62, 2.29],
-            'metal-CuZn-eta': [0.271, 0.677, 1.316],
-            'metal-CuZn-k': [3.61, 2.62, 2.29],
+            'metal-CuZn-eta': [0.445, 0.5682, 0.947],
+            'metal-CuZn-k': [3.522, 2.588, 1.92],
+            'metal-TiO2-eta': [2.585, 2.667, 2.776],
+            'metal-TiO2-k': [0, 0, 0],
         }
-        # -iron {2.91, 2.95, 2.584}, {3.09, 2.93, 2.767}
-        # -lead {1.91, 1.83, 1.44}, {3.51, 3.4, 3.18}
-        # -platinum {2.37, 2.08, 1.84}, {4.26, 3.71, 3.136}
 
         if name in builtin:
             return builtin[name]

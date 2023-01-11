@@ -445,8 +445,6 @@ scene load_scene(std::string path) {
         film.method = integrator::path;
     else if (method == "scatter")
         film.method = integrator::scatter;
-    else if (method == "light")
-        film.method = integrator::light;
     else if (method == "brute-force")
         film.method = integrator::brute_force;
     else
@@ -454,7 +452,7 @@ scene load_scene(std::string path) {
             fmt::format("bad integration method {}", method));
 
     auto sampler =
-        config["film"]["sampler"].value_or<std::string>("independent");
+        config["film"]["sampler"].value_or<std::string>("stratified");
     if (sampler == "independent")
         film.sampler = sampler::independent;
     else if (sampler == "stratified")
