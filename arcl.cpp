@@ -483,7 +483,7 @@ std::optional<intersection> intersect(const indexed_triangle& tri,
     auto xorf_T = std::abs(T);
     if (std::signbit(T) != std::signbit(det))
         xorf_T = -xorf_T;
-    auto near = 0.01;
+    auto near = 0.001;
     if ((xorf_T < near * std::abs(det)) or (xorf_T > hit_t * std::abs(det)))
         return {};
 

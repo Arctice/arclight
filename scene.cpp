@@ -23,71 +23,58 @@ struct scene_load_context {
     toml::table* description{};
     std::filesystem::path scene_root;
     std::unordered_map<std::string, node> nodes;
+    std::unordered_map<std::string, node*> models;
     std::unordered_map<std::string, std::unique_ptr<material>> materials;
     std::unordered_map<std::string, texture> textures;
     std::unordered_map<std::string, sf::Image> images;
 };
 
-matrix_sq4 matrix_inverse(const matrix_sq4& m) {
-    int indxc[4], indxr[4];
-    int ipiv[4] = {0, 0, 0, 0};
-    Float minv[4][4];
-    memcpy(minv, m.m, 4 * 4 * sizeof(Float));
-    for (int i = 0; i < 4; i++) {
-        int irow = 0, icol = 0;
-        Float big = 0.f;
-        // Choose pivot
-        for (int j = 0; j < 4; j++) {
-            if (ipiv[j] != 1) {
-                for (int k = 0; k < 4; k++) {
-                    if (ipiv[k] == 0) {
-                        if (std::abs(minv[j][k]) >= big) {
-                            big = Float(std::abs(minv[j][k]));
-                            irow = j;
-                            icol = k;
-                        }
-                    }
-                    else if (ipiv[k] > 1)
-                        throw std::runtime_error(
-                            "Singular matrix in MatrixInvert");
-                }
-            }
-        }
-        ++ipiv[icol];
-        // Swap rows _irow_ and _icol_ for pivot
-        if (irow != icol) {
-            for (int k = 0; k < 4; ++k) std::swap(minv[irow][k], minv[icol][k]);
-        }
-        indxr[i] = irow;
-        indxc[i] = icol;
-        if (minv[icol][icol] == 0.f)
-            throw std::runtime_error("Singular matrix in MatrixInvert");
+// https://github.com/google/ion/blob/master/ion/math/matrixutils.cc
+matrix_sq4 matrix_inverse(const matrix_sq4& M) {
+    auto& m = M.m;
+    // For 4x4 do not compute the adjugate as the transpose of the cofactor
+    // matrix, because this results in extra work. Several calculations can be
+    // shared across the sub-determinants.
+    //
+    // This approach is explained in David Eberly's Geometric Tools book,
+    // excerpted here:
+    //   http://www.geometrictools.com/Documentation/LaplaceExpansionTheorem.pdf
+    const Float s0 = m[0][0] * m[1][1] - m[1][0] * m[0][1];
+    const Float s1 = m[0][0] * m[1][2] - m[1][0] * m[0][2];
+    const Float s2 = m[0][0] * m[1][3] - m[1][0] * m[0][3];
 
-        // Set $m[icol][icol]$ to one by scaling row _icol_ appropriately
-        Float pivinv = 1. / minv[icol][icol];
-        minv[icol][icol] = 1.;
-        for (int j = 0; j < 4; j++) minv[icol][j] *= pivinv;
+    const Float s3 = m[0][1] * m[1][2] - m[1][1] * m[0][2];
+    const Float s4 = m[0][1] * m[1][3] - m[1][1] * m[0][3];
+    const Float s5 = m[0][2] * m[1][3] - m[1][2] * m[0][3];
 
-        // Subtract this row from others to zero out their columns
-        for (int j = 0; j < 4; j++) {
-            if (j != icol) {
-                Float save = minv[j][icol];
-                minv[j][icol] = 0;
-                for (int k = 0; k < 4; k++) minv[j][k] -= minv[icol][k] * save;
-            }
-        }
-    }
-    // Swap columns to reflect permutation
-    for (int j = 3; j >= 0; j--) {
-        if (indxr[j] != indxc[j]) {
-            for (int k = 0; k < 4; k++)
-                std::swap(minv[k][indxr[j]], minv[k][indxc[j]]);
-        }
-    }
+    const Float c0 = m[2][0] * m[3][1] - m[3][0] * m[2][1];
+    const Float c1 = m[2][0] * m[3][2] - m[3][0] * m[2][2];
+    const Float c2 = m[2][0] * m[3][3] - m[3][0] * m[2][3];
 
-    matrix_sq4 mx;
-    memcpy(mx.m, minv, 4 * 4 * sizeof(Float));
-    return mx;
+    const Float c3 = m[2][1] * m[3][2] - m[3][1] * m[2][2];
+    const Float c4 = m[2][1] * m[3][3] - m[3][1] * m[2][3];
+    const Float c5 = m[2][2] * m[3][3] - m[3][2] * m[2][3];
+
+    auto determinant =
+        s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
+    auto s = 1 / determinant;
+
+    return matrix_sq4{{{s * (m[1][1] * c5 - m[1][2] * c4 + m[1][3] * c3),
+                        s * (-m[0][1] * c5 + m[0][2] * c4 - m[0][3] * c3),
+                        s * (m[3][1] * s5 - m[3][2] * s4 + m[3][3] * s3),
+                        s * (-m[2][1] * s5 + m[2][2] * s4 - m[2][3] * s3)},
+                       {s * (-m[1][0] * c5 + m[1][2] * c2 - m[1][3] * c1),
+                        s * (m[0][0] * c5 - m[0][2] * c2 + m[0][3] * c1),
+                        s * (-m[3][0] * s5 + m[3][2] * s2 - m[3][3] * s1),
+                        s * (m[2][0] * s5 - m[2][2] * s2 + m[2][3] * s1)},
+                       {s * (m[1][0] * c4 - m[1][1] * c2 + m[1][3] * c0),
+                        s * (-m[0][0] * c4 + m[0][1] * c2 - m[0][3] * c0),
+                        s * (m[3][0] * s4 - m[3][1] * s2 + m[3][3] * s0),
+                        s * (-m[2][0] * s4 + m[2][1] * s2 - m[2][3] * s0)},
+                       {s * (-m[1][0] * c3 + m[1][1] * c1 - m[1][2] * c0),
+                        s * (m[0][0] * c3 - m[0][1] * c1 + m[0][2] * c0),
+                        s * (-m[3][0] * s3 + m[3][1] * s1 - m[3][2] * s0),
+                        s * (m[2][0] * s3 - m[2][1] * s1 + m[2][2] * s0)}}};
 }
 
 transform parse_transform(const toml::array& ts) {
@@ -333,17 +320,21 @@ node* load_node_lazy(scene_load_context& context, std::string id) {
     }
 
     else if (model_table and id.starts_with("model.")) {
-        auto model_name = id.substr(6);
-        auto vt = (*model_table)[model_name].as_table();
+        auto model_id = id.substr(6);
+        auto vt = (*model_table)[model_id].as_table();
         auto path = (*vt)["file"].value<std::string>();
         if (not path) {
             fmt::print("bad model path: {}", id);
             return {};
         }
 
+        if (context.models.contains(*path))
+            return context.models.at(*path);
         auto full_path = context.scene_root.c_str() + *path;
         context.nodes[id] = {load_model(full_path)};
-        return &context.nodes.at(id);
+        auto model_view = &context.nodes.at(id);
+        context.models[*path] = model_view;
+        return model_view;
     }
 
     else {
