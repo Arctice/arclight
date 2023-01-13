@@ -224,9 +224,8 @@ material* parse_material(scene_load_context& context,
     }
 
     else if (type == "specular") {
-        auto refraction = parse_texture(context, nt["refraction"]);
         context.materials[name] = std::make_unique<material>(specular{
-            .refraction = fix_refraction(refraction),
+            .refraction = parse_texture(context, nt["refraction"]),
             .absorption = parse_texture(context, nt["absorption"]),
             .transmission = parse_texture(context, nt["transmission"]),
         });
@@ -235,7 +234,7 @@ material* parse_material(scene_load_context& context,
     else if (type == "glossy") {
         auto refraction = parse_texture(context, nt["refraction"]);
         context.materials[name] = std::make_unique<material>(glossy{
-            .refraction = fix_refraction(refraction),
+            .refraction = parse_texture(context, nt["refraction"]),
             .absorption = parse_texture(context, nt["absorption"]),
             .transmission = parse_texture(context, nt["transmission"]),
             .roughness = parse_texture(context, nt["roughness"]),

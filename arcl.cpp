@@ -840,8 +840,9 @@ auto fresnel_conductor(Float cos_t, light etai, light etat, light k) {
     a2plusb2 = {std::sqrt(a2plusb2.x), std::sqrt(a2plusb2.y),
                 std::sqrt(a2plusb2.z)};
 
-    light t1 = {a2plusb2.x + CosTheta2, a2plusb2.y + CosTheta2,
-                a2plusb2.z + CosTheta2};
+
+
+    light t1 = a2plusb2 + light{CosTheta2};
     light a = (a2plusb2 + t0) * (Float)0.5;
     a = {std::sqrt(a.x), std::sqrt(a.y), std::sqrt(a.z)};
     light t2 = a * 2 * cos_t;
@@ -2050,7 +2051,6 @@ int main(int argc, char** argv) {
 // perspective camera is a bit wrong
 // convergence metering
 // an empty white scene gets reconstructed badly
-// conductors are wrong, again
 // some self-intersection issues apparent in zero-day and other scenes
 // can be fudged with a min ray distance but should investigate
 // bdpt

@@ -5,6 +5,7 @@ import argparse
 from collections import ChainMap
 import pathlib
 import random
+import math
 
 
 def strip_indents(line):
@@ -343,6 +344,16 @@ kelvin_table = {
     13900: (0.4950, 0.5994, 1.0000),
     14000: (0.4930, 0.5978, 1.0000)
 }
+
+
+def spectrum_filter(wavelength, xs):
+    s = 0
+    norm = 0
+    for nm, x in xs:
+        w = math.exp(-(nm - wavelength)**2 / (2 * 40 * 40))
+        s += x * w
+        norm += w
+    return s / norm
 
 
 def transform_to_camera(T):
@@ -1081,9 +1092,9 @@ class Context:
         values = [l.strip().split() for l in open(path, 'r').readlines()]
         values = [l for l in values if '#' not in l]
         values = [(float(x[0]), float(x[1])) for x in values]
-        blue = sorted(values, key=lambda x: abs(x[0] - 465))[0][1]
-        green = sorted(values, key=lambda x: abs(x[0] - 532))[0][1]
-        red = sorted(values, key=lambda x: abs(x[0] - 630))[0][1]
+        blue = spectrum_filter(445, values)
+        green = spectrum_filter(550, values)
+        red = spectrum_filter(650, values)
         return [red, green, blue]
 
     def convert_blackbody(self, value):
