@@ -178,7 +178,7 @@ struct stratified_sequence : public pixel_sampler {
         int d{0};
 
         vec2f sample_2d() {
-            if (d >= 8)
+            if (d >= 16)
                 return {(Float)self->fallback(), (Float)self->fallback()};
             while ((int)self->dimensions.size() <= d)
                 self->dimensions.push_back(sample_set{
@@ -262,12 +262,47 @@ struct stratified_sequence : public pixel_sampler {
     sample_rng fallback;
 };
 
+struct rng_sequence : public pixel_sampler {
+    struct sample : public sample_sequence {
+        int d{};
+        sample_rng rng;
+
+        sample(vec2<i32> px, i32 d) : rng(px, d) {}
+        Float sample_1d() {
+            d++;
+            return rng();
+        }
+        vec2f sample_2d() {
+            d += 2;
+            return {rng(), rng()};
+        }
+        void skip_to(int next) {
+            if (next < d)
+                throw std::runtime_error(
+                    "rng_sequence::sample - backwards skip unimplemented");
+            while (d < next) sample_1d();
+        }
+    };
+
+    rng_sequence(vec2<i32> px, i32 d) : px(px), d(d) {}
+    std::unique_ptr<sample_sequence> nth_sample(int n) {
+        return std::unique_ptr<sample_sequence>(new sample{px, d + n});
+    }
+
+    vec2<i32> px;
+    i32 d;
+};
+
 std::unique_ptr<pixel_sampler> multi_stratified_sampler(vec2<int> px, int) {
     return std::unique_ptr<pixel_sampler>(new multi_stratified_sequence{px});
 }
 
 std::unique_ptr<pixel_sampler> stratified_sampler(vec2<int> px, int) {
     return std::unique_ptr<pixel_sampler>(new stratified_sequence{px});
+}
+
+std::unique_ptr<pixel_sampler> rng_sampler(vec2<int> px, int d) {
+    return std::unique_ptr<pixel_sampler>(new rng_sequence{px, d});
 }
 
 Float uniform_rng() {

@@ -16,6 +16,7 @@ struct pixel_sampler {
 std::unique_ptr<pixel_sampler> independent_sampler(vec2<int>, int size);
 std::unique_ptr<pixel_sampler> stratified_sampler(vec2<int>, int);
 std::unique_ptr<pixel_sampler> multi_stratified_sampler(vec2<int>, int);
+std::unique_ptr<pixel_sampler> rng_sampler(vec2<int>, int);
 
 vec3f sample_uniform_direction(vec2f);
 vec2f sample_uniform_disk(vec2f);

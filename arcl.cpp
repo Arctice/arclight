@@ -1156,29 +1156,6 @@ scatter_sample scatter(const scene&, const glossy& material,
                           .probability = probability};
 }
 
-scatter_sample coat_scatter(const scene& scene, sample_sequence* rng,
-                            const coated& mat, const intersection& isect,
-                            const vec3f& towards) {
-    auto first = scatter(scene, rng, *mat.coat, isect, towards);
-    auto coat_refraction = isect.shading.to_local(first.direction);
-    if (coat_refraction.z >= 0)
-        return first;
-
-    auto second = scatter(scene, rng, *mat.base, isect, first.direction * -1);
-    auto base_refraction = isect.shading.to_local(second.direction);
-    if (base_refraction.z < 0)
-        return {.direction = second.direction};
-
-    auto next = coat_scatter(scene, rng, mat, isect, second.direction * -1);
-    next.value *= std::abs(coat_refraction.z) * std::abs(base_refraction.z);
-
-    return {.value = first.value * second.value * next.value,
-            .direction = next.direction,
-            .probability =
-                first.probability * second.probability * next.probability,
-            .specular = false};
-}
-
 scatter_sample scatter(const scene& scene, sample_sequence* rng,
                        const coated& mat, const intersection& isect,
                        vec3f towards) {
@@ -1186,6 +1163,12 @@ scatter_sample scatter(const scene& scene, sample_sequence* rng,
         rng->sample_1d() < (1 - sample_texture_1d(mat.weight, isect));
     if (skip_coating)
         return scatter(scene, rng, *mat.base, isect, towards);
+
+    auto seed = rng->sample_2d();
+    auto local_rng = rng_sampler(
+        vec2<i32>{i32(seed.x * (1 << 16)), i32(seed.y * (1 << 16))}, {});
+    auto ss = local_rng->nth_sample({});
+    auto coat_rng = ss.get();
 
     auto outgoing = isect.shading.to_local(towards);
     auto inside = outgoing.z < 0;
@@ -1195,20 +1178,55 @@ scatter_sample scatter(const scene& scene, sample_sequence* rng,
         towards = isect.shading.to_world(outgoing);
     }
 
-    auto scattering = coat_scatter(scene, rng, mat, isect, towards);
+    auto direction = towards;
+    scatter_sample sample{
+        .value = light{1},
+        .direction = towards,
+        .probability = 1,
+        .specular = true,
+    };
+    while (sample.probability) {
+        auto first = scatter(scene, coat_rng, *mat.coat, isect, direction);
+        auto coat_refraction = isect.shading.to_local(first.direction);
+        if (coat_refraction.z >= 0) {
+            sample.direction = first.direction;
+            sample.value *= first.value;
+            sample.probability *= first.probability;
+            sample.specular = sample.specular and first.specular;
+            break;
+        }
 
-    if (inside) {
-        scattering.direction -=
-            isect.normal * 2 * isect.normal.dot(scattering.direction);
+        auto second =
+            scatter(scene, coat_rng, *mat.base, isect, first.direction * -1);
+        auto base_refraction = isect.shading.to_local(second.direction);
+        if (base_refraction.z < 0) {
+            // unhandled transmission
+            sample = {.direction = second.direction};
+            break;
+        }
+
+        direction = second.direction * -1;
+        sample.value *= first.value * second.value *
+                        std::abs(coat_refraction.z) *
+                        std::abs(base_refraction.z);
+        sample.probability *= first.probability * second.probability;
+        sample.specular = false;
     }
 
-    return scattering;
+    if (inside) {
+        direction -= isect.normal * 2 * isect.normal.dot(direction);
+    }
+
+    return sample;
 }
 
 scatter_sample scatter(const scene& scene, const coated& mat,
                        const intersection& isect, const vec3f& towards,
                        const vec3f& from) {
-    static thread_local auto local_rng = independent_sampler({}, {});
+    auto local_rng = rng_sampler(
+        vec2<i32>{i32(towards.x * (1 << 16)),
+                  i32(towards.y * (1 << 16) + towards.z * (1 << 16))},
+        {});
     auto ss = local_rng->nth_sample({});
     auto rng = ss.get();
 
@@ -1675,7 +1693,7 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
                     if (not area_light)
                         continue;
                     auto d = intersect(area_light->node, r,
-                                       std::numeric_limits<float>::infinity());
+                                       std::numeric_limits<Float>::infinity());
                     if (d and d->distance == intersection->distance) {
                         auto light_pdf =
                             sample_light(scene, *previous_intersection, light,
@@ -1693,17 +1711,18 @@ light path_trace(const scene& scene, sample_sequence* rng, ray r,
         if (max_depth <= depth)
             break;
 
+        rng->skip_to(2 + 0 + depth * 7);
         auto [light, l_weights] =
             sample_direct_lighting_weighted(scene, rng, *intersection, r);
         light_sampler_pdfs = l_weights;
         if (0 < light.value.length_sq()) {
             L += beta * light.value;
         }
-        rng->skip_to(2 + 3 + depth * 5);
+        rng->skip_to(2 + 3 + depth * 7);
 
         auto intersection_point = r.distance(intersection->distance);
         auto scattering = scatter(scene, rng, *intersection, r.direction * -1);
-        rng->skip_to(2 + 5 + depth * 5);
+        rng->skip_to(2 + 6 + depth * 7);
 
         auto icos = scattering.direction.dot(intersection->normal);
         auto reflected =
@@ -2044,7 +2063,6 @@ int main(int argc, char** argv) {
 // x and y horizontal, z vertical, positive upwards
 
 // todo:
-// coat sampling uses a variable number of samples
 // diffuse transmission is too bright
 // light sampling from a surface with a diffuse coating is wrong
 // stratified sampler still gets stuck
